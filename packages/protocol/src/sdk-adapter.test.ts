@@ -184,6 +184,44 @@ describe("createSdkAdapter (streamable-http, modern era)", () => {
     await Promise.all(sessions.map((s) => adapter.disconnect(s.id)));
   }, 15_000);
 
+  it("aborts an in-flight callTool via AbortSignal", async () => {
+    const adapter = createSdkAdapter();
+    const descriptor: McpServerDescriptor = {
+      id: "cancel-target",
+      displayName: "Cancel",
+      transport: "streamable-http",
+      url: baseUrl,
+      protocol: { policy: "modern" },
+    };
+    await adapter.connect(descriptor);
+
+    // Long tool call. Abort well before completion.
+    const controller = new AbortController();
+    const start = performance.now();
+    const inflight = adapter.callTool({
+      serverId: descriptor.id,
+      name: "slow_echo",
+      arguments: { value: 42, delayMs: 10_000 },
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 100);
+    await expect(inflight).rejects.toBeDefined();
+    const elapsed = performance.now() - start;
+    // Must reject well before the 10s tool wall-clock — proves the abort
+    // propagated to the per-request stream instead of waiting on the reply.
+    expect(elapsed).toBeLessThan(2_000);
+
+    // Session survives an aborted call — the adapter can still run new tools.
+    const { value } = await adapter.callTool({
+      serverId: descriptor.id,
+      name: "add_numbers",
+      arguments: { a: 1, b: 2 },
+    });
+    expect(value).toEqual({ sum: 3 });
+
+    await adapter.disconnect(descriptor.id);
+  }, 15_000);
+
   it("rejects a duplicate connect for the same serverId", async () => {
     const adapter = createSdkAdapter();
     const descriptor: McpServerDescriptor = {

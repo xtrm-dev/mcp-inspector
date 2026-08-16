@@ -3,7 +3,6 @@ version: 2
 updates:
   # Cooldown delays PRs for freshly-published versions so a compromised
   # release does not auto-open here on day 0.
-  # nosemgrep: package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown
   - package-ecosystem: npm
     directory: /
     schedule:
@@ -16,14 +15,13 @@ updates:
       npm-minor-and-patch:
         update-types: [minor, patch]
     cooldown:
-      default-days: 5
+      default-days: 7
       semver-major-days: 14
-      semver-minor-days: 5
-      semver-patch-days: 2
+      semver-minor-days: 7
+      semver-patch-days: 3
 
-  # github-actions dependabot ecosystem only accepts `default-days`,
-  # `include`, `exclude` under cooldown — semver-* keys are rejected.
-  # nosemgrep: package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown
+  # github-actions ecosystem only supports `default-days` under cooldown
+  # (semver-* keys rejected by dependabot for github-actions).
   - package-ecosystem: github-actions
     directory: /
     schedule:

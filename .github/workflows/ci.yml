@@ -9,6 +9,14 @@ permissions:
   contents: read
 
 jobs:
+  promotion-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+      - name: Enforce main promotion policy
+        run: node scripts/check-promotion-policy.mjs
+
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 15

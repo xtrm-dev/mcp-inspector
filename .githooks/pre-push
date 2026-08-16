@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Pre-push hook.
+#   1. Block direct push to protected branches (main).
+#   2. Chain pre-commit framework's push-stage hooks (semgrep, osv-scanner).
+set -uo pipefail
+
+PROTECTED_BRANCHES="main master"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    branch="${remote_ref#refs/heads/}"
+    for protected in $PROTECTED_BRANCHES; do
+        if [ "$branch" = "$protected" ]; then
+            echo "🚫 Direct push to '$protected' blocked. Main = release-only." >&2
+            echo "" >&2
+            echo "Open a PR from dev instead:" >&2
+            echo "  git checkout dev && gh pr create --base main --fill" >&2
+            echo "" >&2
+            echo "Bypass (emergency only):  git push --no-verify" >&2
+            exit 1
+        fi
+    done
+done < /dev/stdin
+
+if command -v pre-commit &>/dev/null && [ -f .pre-commit-config.yaml ]; then
+    pre-commit run --hook-stage pre-push --all-files || exit 1
+fi
+exit 0

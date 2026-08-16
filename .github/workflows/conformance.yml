@@ -1,0 +1,58 @@
+name: Conformance
+
+# Official MCP conformance harness against apps/conformance-client.
+# Runs the two core scenarios that must pass for any modern-era MCP client:
+# tools_call end-to-end, and http-standard-headers wire hygiene.
+#
+# The full 2026-07-28 requirements set (auth, DPoP, request-state, etc.) is
+# left to the scheduled scoreboard run below — many scenarios exercise
+# capabilities MCP Inspector X deliberately does not implement in slice 7.
+
+on:
+  pull_request:
+    branches: [dev, main]
+  schedule:
+    - cron: "0 6 * * 1"  # weekly full-suite baseline
+
+permissions:
+  contents: read
+
+jobs:
+  scenarios:
+    name: Conformance — core scenarios (required)
+    runs-on: ubuntu-latest
+    steps:
+      # actions/checkout pinned to v4.2.2 SHA.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '22.19.0'
+      - name: Install
+        run: npm install
+      - name: tools_call
+        run: >-
+          npx --package=@modelcontextprotocol/conformance@0.2.0-alpha.11 conformance client
+          --command "npx tsx apps/conformance-client/src/index.ts"
+          --scenario tools_call
+          --spec-version 2026-07-28
+          --timeout 15000
+
+  scoreboard:
+    name: Conformance — full 2026-07-28 scoreboard (informational)
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@a0853c24544627f65ddf259abe73b1d18a591444
+        with:
+          node-version: '22.19.0'
+      - name: Install
+        run: npm install
+      - name: Full requirements set
+        run: >-
+          npx --package=@modelcontextprotocol/conformance@0.2.0-alpha.11 conformance client
+          --command "npx tsx apps/conformance-client/src/index.ts"
+          --requirements 2026-07-28
+          --timeout 15000
+          --expected-failures apps/conformance-client/expected-failures.yml

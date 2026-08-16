@@ -1,0 +1,16 @@
+# Semgrep ignores.
+.env
+.env.*
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+coverage/
+.vite/
+.xtrm/
+**/__snapshots__/
+**/test/fixtures/
+**/tests/fixtures/
+package-lock.json
+pnpm-lock.yaml
+yarn.lock

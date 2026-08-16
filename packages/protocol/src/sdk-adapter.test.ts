@@ -29,6 +29,25 @@ function buildTestMcp(): McpServer {
       };
     },
   );
+  // slow_echo — sleeps `delayMs` before returning `value`, so concurrent
+  // callers actually observe parallelism (fast sync tools finish before
+  // the second call would even be scheduled).
+  mcp.registerTool(
+    "slow_echo",
+    {
+      title: "Slow Echo",
+      description: "Sleep for delayMs, then echo value",
+      inputSchema: z.object({ value: z.number(), delayMs: z.number() }),
+      outputSchema: z.object({ value: z.number() }),
+    },
+    async ({ value, delayMs }) => {
+      await new Promise((r) => setTimeout(r, delayMs));
+      return {
+        content: [{ type: "text", text: JSON.stringify({ value }) }],
+        structuredContent: { value },
+      };
+    },
+  );
   return mcp;
 }
 
@@ -76,9 +95,9 @@ describe("createSdkAdapter (streamable-http, modern era)", () => {
     expect(negotiation.selectedVersion).toBe(MODERN_PROTOCOL_VERSION);
 
     const tools = await adapter.listTools(descriptor.id);
-    expect(tools).toHaveLength(1);
-    expect(tools[0]?.name).toBe("add_numbers");
-    expect(tools[0]?.title).toBe("Add Numbers");
+    const add = tools.find((t) => t.name === "add_numbers");
+    expect(add?.title).toBe("Add Numbers");
+    expect(tools.map((t) => t.name).sort()).toEqual(["add_numbers", "slow_echo"]);
 
     const { value, evidence } = await adapter.callTool({
       serverId: descriptor.id,
@@ -91,6 +110,78 @@ describe("createSdkAdapter (streamable-http, modern era)", () => {
     expect(evidence.resultType).toBe("complete");
 
     await adapter.disconnect(descriptor.id);
+  }, 15_000);
+
+  it("runs concurrent callTool() on one session in parallel, each result distinct", async () => {
+    const adapter = createSdkAdapter();
+    const descriptor: McpServerDescriptor = {
+      id: "concurrent-single",
+      displayName: "Concurrent Single",
+      transport: "streamable-http",
+      url: baseUrl,
+      protocol: { policy: "modern" },
+    };
+    await adapter.connect(descriptor);
+
+    const N = 10;
+    const DELAY = 80;
+    const start = performance.now();
+    const results = await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        adapter.callTool({
+          serverId: descriptor.id,
+          name: "slow_echo",
+          arguments: { value: i, delayMs: DELAY },
+        }),
+      ),
+    );
+    const elapsed = performance.now() - start;
+
+    // Each call carries its own value back.
+    expect(results.map((r) => r.value)).toEqual(
+      Array.from({ length: N }, (_, i) => ({ value: i })),
+    );
+    // Parallel: total wall-clock << N * DELAY. Generous bound to avoid CI flakes.
+    expect(elapsed).toBeLessThan(N * DELAY * 0.6);
+
+    await adapter.disconnect(descriptor.id);
+  }, 15_000);
+
+  it("runs concurrent callTool() across multiple sessions independently", async () => {
+    const adapter = createSdkAdapter();
+    const sessions = ["srv-a", "srv-b", "srv-c"].map(
+      (id): McpServerDescriptor => ({
+        id,
+        displayName: id,
+        transport: "streamable-http",
+        url: baseUrl,
+        protocol: { policy: "modern" },
+      }),
+    );
+    await Promise.all(sessions.map((s) => adapter.connect(s)));
+
+    const DELAY = 60;
+    const start = performance.now();
+    const results = await Promise.all(
+      sessions.map((s, i) =>
+        adapter.callTool({
+          serverId: s.id,
+          name: "slow_echo",
+          arguments: { value: 100 + i, delayMs: DELAY },
+        }),
+      ),
+    );
+    const elapsed = performance.now() - start;
+
+    expect(results.map((r) => r.value)).toEqual([
+      { value: 100 },
+      { value: 101 },
+      { value: 102 },
+    ]);
+    // Cross-session parallelism: still bounded by ~1 * DELAY, not N * DELAY.
+    expect(elapsed).toBeLessThan(sessions.length * DELAY * 0.7);
+
+    await Promise.all(sessions.map((s) => adapter.disconnect(s.id)));
   }, 15_000);
 
   it("rejects a duplicate connect for the same serverId", async () => {

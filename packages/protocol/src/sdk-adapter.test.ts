@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer, type Server as HttpServer } from "node:http";
 import { z } from "zod";
 import { McpServer, createMcpHandler, type McpHttpHandler } from "@modelcontextprotocol/server";
@@ -39,8 +40,12 @@ describe("createSdkAdapter (streamable-http, modern era)", () => {
   beforeAll(async () => {
     handler = createMcpHandler(() => buildTestMcp());
     const nodeHandler = toNodeHandler(handler);
-    httpServer = createServer((req, res) => {
-      void nodeHandler(req, res);
+    httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
+      // node:http.IncomingMessage types `method`/`url` as `string | undefined`,
+      // while @modelcontextprotocol/node's NodeIncomingMessageLike uses
+      // optional-`?` under exactOptionalPropertyTypes (no `| undefined`).
+      // Structurally identical at runtime; cast to satisfy tsc.
+      void nodeHandler(req as unknown as Parameters<typeof nodeHandler>[0], res);
     });
     await new Promise<void>((resolve, reject) => {
       httpServer.once("error", reject);

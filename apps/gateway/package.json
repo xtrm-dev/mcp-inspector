@@ -11,10 +11,14 @@
   "dependencies": {
     "@hono/node-server": "^2.0.9",
     "@mcp-inspector-x/protocol": "*",
-    "hono": "^4.9.0"
+    "@modelcontextprotocol/node": "2.0.0",
+    "@modelcontextprotocol/server": "2.0.0",
+    "hono": "^4.9.0",
+    "zod": "^4.2.0"
   },
   "devDependencies": {
     "tsx": "^4.20.0",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "vitest": "^4.0.0"
   }
 }

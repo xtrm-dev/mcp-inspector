@@ -1,64 +1,100 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createExecutionRecord, type ExecutionStatus } from "@mcp-inspector-x/execution";
 import { buildCapabilityId } from "@mcp-inspector-x/registry";
 import { classifyResult } from "@mcp-inspector-x/renderers";
-import { MODERN_PROTOCOL_VERSION, type JsonValue } from "@mcp-inspector-x/protocol";
+import {
+  MODERN_PROTOCOL_VERSION,
+  type JsonValue,
+  type McpToolDefinition,
+  type ProtocolNegotiation,
+} from "@mcp-inspector-x/protocol";
 import { focusNode, type ToolNodePresentation, type Workspace } from "@mcp-inspector-x/workspace";
 
-interface DemoTool {
+interface ServerSummary {
+  id: string;
+  displayName: string;
+  transport: string;
+  negotiation: ProtocolNegotiation;
+}
+
+interface ToolCard {
   id: string;
   server: string;
   name: string;
+  title?: string;
   status: ExecutionStatus;
   latencyMs: number;
   result: JsonValue;
   presentation: ToolNodePresentation;
 }
 
-const initialTools: DemoTool[] = [
-  {
-    id: buildCapabilityId("market-data", "tool", "futures_prices"),
-    server: "market-data",
-    name: "futures_prices",
-    status: "complete",
-    latencyMs: 312,
-    result: [
-      { symbol: "SR3Z6", price: 96.325, volume: 2184 },
-      { symbol: "SR3H7", price: 96.41, volume: 984 },
-    ],
-    presentation: "expanded",
-  },
-  {
-    id: buildCapabilityId("treasury", "tool", "treasury_curve"),
-    server: "treasury",
-    name: "treasury_curve",
-    status: "complete",
-    latencyMs: 184,
-    result: [
-      { tenor: "2Y", yield: 3.74 },
-      { tenor: "10Y", yield: 4.16 },
-    ],
-    presentation: "collapsed",
-  },
-  {
-    id: buildCapabilityId("economic-data", "tool", "latest_releases"),
-    server: "economic-data",
-    name: "latest_releases",
-    status: "error",
-    latencyMs: 2140,
-    result: { error: "Downstream provider timeout", code: "TIMEOUT" },
-    presentation: "collapsed",
-  },
-];
+type Mode = "loading" | "live" | "unavailable";
 
 export function App() {
-  const [tools, setTools] = useState(initialTools);
+  const [mode, setMode] = useState<Mode>("loading");
+  const [error, setError] = useState<string | null>(null);
+  const [servers, setServers] = useState<ServerSummary[]>([]);
+  const [tools, setTools] = useState<ToolCard[]>([]);
   const [view, setView] = useState<"graph" | "grid" | "list">("graph");
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const serversRes = await fetch("/api/servers");
+        if (!serversRes.ok) throw new Error(`GET /api/servers ${serversRes.status}`);
+        const { servers: fetchedServers } = (await serversRes.json()) as {
+          servers: ServerSummary[];
+        };
+        if (cancelled) return;
+        if (fetchedServers.length === 0) {
+          setMode("unavailable");
+          setError("gateway reports no bound MCP servers");
+          return;
+        }
+        const cards: ToolCard[] = [];
+        for (const s of fetchedServers) {
+          const toolsRes = await fetch(`/api/servers/${encodeURIComponent(s.id)}/tools`);
+          if (!toolsRes.ok) continue;
+          const { tools: toolDefs } = (await toolsRes.json()) as {
+            tools: McpToolDefinition[];
+          };
+          for (const t of toolDefs) {
+            const card: ToolCard = {
+              id: buildCapabilityId(s.id, "tool", t.name),
+              server: s.id,
+              name: t.name,
+              status: "queued",
+              latencyMs: 0,
+              result: null,
+              presentation: "collapsed",
+            };
+            if (t.title !== undefined) card.title = t.title;
+            cards.push(card);
+          }
+        }
+        if (cancelled) return;
+        setServers(fetchedServers);
+        setTools(cards);
+        setMode("live");
+      } catch (err) {
+        if (cancelled) return;
+        setMode("unavailable");
+        setError(err instanceof Error ? err.message : String(err));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const workspace = useMemo<Workspace>(
     () => ({
-      id: "demo-workspace",
-      name: "Morning market inspection",
+      id: "live-workspace",
+      name:
+        servers.length > 0
+          ? `Live · ${servers.map((s) => s.displayName).join(", ")}`
+          : "MCP Inspector X",
       nodes: tools.map((tool) => ({
         id: tool.id,
         capabilityId: tool.id,
@@ -69,7 +105,7 @@ export function App() {
       })),
       edges: [],
     }),
-    [tools],
+    [tools, servers],
   );
 
   function setPresentation(id: string, presentation: ToolNodePresentation) {
@@ -85,13 +121,27 @@ export function App() {
     );
   }
 
+  const modeLabel: string =
+    mode === "loading"
+      ? "loading…"
+      : mode === "live"
+        ? "live mode"
+        : `unavailable${error ? ` · ${error}` : ""}`;
+
   return (
     <div className="app-shell">
       <header className="topbar">
-        <div className="brand"><span className="logo">X</span><strong>MCP Inspector X</strong></div>
+        <div className="brand">
+          <span className="logo">X</span>
+          <strong>MCP Inspector X</strong>
+        </div>
         <span className="workspace-name">{workspace.name}</span>
         <div className="topbar-spacer" />
-        <span className="protocol-chip">Modern · {MODERN_PROTOCOL_VERSION}</span>
+        <span className="protocol-chip">
+          {servers[0]?.negotiation.negotiatedEra === "legacy" ? "Legacy" : "Modern"}
+          {" · "}
+          {servers[0]?.negotiation.selectedVersion ?? MODERN_PROTOCOL_VERSION}
+        </span>
         <button className="button primary">Run all</button>
       </header>
 
@@ -102,19 +152,39 @@ export function App() {
         <button className="nav">Executions</button>
         <button className="nav">Source graph</button>
         <p className="eyebrow">Servers</p>
-        {["market-data", "treasury", "economic-data", "darth-feedor"].map((server) => (
-          <button className="nav" key={server}>{server}</button>
+        {servers.length === 0 && mode === "loading" && (
+          <button className="nav" disabled>
+            loading…
+          </button>
+        )}
+        {servers.length === 0 && mode === "unavailable" && (
+          <button className="nav" disabled>
+            (none)
+          </button>
+        )}
+        {servers.map((s) => (
+          <button className="nav" key={s.id}>
+            {s.displayName}
+          </button>
         ))}
       </aside>
 
       <main className="workspace">
         <div className="workspace-toolbar">
           <div className="segmented">
-            {(["graph", "grid", "list"] as const).map((mode) => (
-              <button className={view === mode ? "active" : ""} onClick={() => setView(mode)} key={mode}>{mode}</button>
+            {(["graph", "grid", "list"] as const).map((m) => (
+              <button
+                className={view === m ? "active" : ""}
+                onClick={() => setView(m)}
+                key={m}
+              >
+                {m}
+              </button>
             ))}
           </div>
-          <span className="muted">{tools.length} tools · fixture mode</span>
+          <span className="muted">
+            {tools.length} tools · {modeLabel}
+          </span>
           <div className="topbar-spacer" />
           <button className="button">Copy selected for agent</button>
           <button className="button primary">Run selected</button>
@@ -123,7 +193,7 @@ export function App() {
         <section className={`tool-surface ${view}`}>
           {tools.map((tool) => {
             const record = createExecutionRecord({
-              executionId: `fixture:${tool.id}`,
+              executionId: `live:${tool.id}`,
               capabilityId: tool.id,
               status: tool.status,
               startedAt: new Date(Date.now() - tool.latencyMs).toISOString(),
@@ -135,8 +205,10 @@ export function App() {
               <article className={`tool-card ${tool.presentation}`} key={tool.id}>
                 <div className="tool-header">
                   <div>
-                    <strong>{tool.name}</strong>
-                    <span>{tool.server} · {classified.renderer}</span>
+                    <strong>{tool.title ?? tool.name}</strong>
+                    <span>
+                      {tool.server} · {classified.renderer}
+                    </span>
                   </div>
                   <span className={`status ${tool.status}`}>{tool.status}</span>
                 </div>
@@ -147,13 +219,27 @@ export function App() {
                 {tool.presentation !== "collapsed" && (
                   <div className="expanded-body">
                     <div className="local-tabs">
-                      <button className="active">Result</button><button>Parameters</button><button>Docs</button><button>Trace</button><button>Source</button><button>History</button>
+                      <button className="active">Result</button>
+                      <button>Parameters</button>
+                      <button>Docs</button>
+                      <button>Trace</button>
+                      <button>Source</button>
+                      <button>History</button>
                     </div>
                     <pre>{JSON.stringify(tool.result, null, 2)}</pre>
                   </div>
                 )}
                 <div className="tool-actions">
-                  <button onClick={() => setPresentation(tool.id, tool.presentation === "collapsed" ? "expanded" : "collapsed")}>{tool.presentation === "collapsed" ? "Expand" : "Collapse"}</button>
+                  <button
+                    onClick={() =>
+                      setPresentation(
+                        tool.id,
+                        tool.presentation === "collapsed" ? "expanded" : "collapsed",
+                      )
+                    }
+                  >
+                    {tool.presentation === "collapsed" ? "Expand" : "Collapse"}
+                  </button>
                   <button onClick={() => setPresentation(tool.id, "focus")}>Focus</button>
                   <button>Agent handoff</button>
                 </div>

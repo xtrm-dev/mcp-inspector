@@ -1,0 +1,13 @@
+{
+  "name": "@mcp-inspector-x/investigation",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": { ".": "./src/index.ts" },
+  "scripts": { "build": "tsc -p tsconfig.json --noEmit", "typecheck": "tsc -p tsconfig.json --noEmit" },
+  "dependencies": {
+    "@mcp-inspector-x/execution": "*",
+    "@mcp-inspector-x/protocol": "*"
+  },
+  "devDependencies": { "typescript": "^5.9.2" }
+}

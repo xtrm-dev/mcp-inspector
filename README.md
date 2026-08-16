@@ -8,6 +8,20 @@ A visual, multi-tool Model Context Protocol inspector for capability discovery, 
 
 Early implementation. The protocol target is MCP `2026-07-28` modern era, with explicit legacy compatibility where required.
 
+## Branch model
+
+`dev` is the default development/integration branch. `main` is stable/latest only.
+
+```text
+feature/*
+   ↓ pull request
+  dev
+   ↓ promotion pull request
+ main
+```
+
+Normal feature/fix pull requests target `dev`. Changes reach `main` only through a verified `dev → main` promotion, except an explicitly labeled emergency hotfix. See [`docs/branching.md`](docs/branching.md).
+
 ## Product direction
 
 MCP Inspector X is designed around a multi-tool workspace rather than a single request form:

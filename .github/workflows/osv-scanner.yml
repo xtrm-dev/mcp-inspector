@@ -1,0 +1,27 @@
+name: OSV Scanner
+
+# Vulnerability scanner (OSV.dev) — replaces GHAS Dependency Review.
+# Scans manifests + lockfiles for both dev (default) and main (release).
+
+on:
+  push:
+    branches: [dev, main]
+  pull_request:
+    branches: [dev, main]
+  schedule:
+    - cron: "0 6 * * 1"  # Monday 06:00 UTC
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: OSV scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: google/osv-scanner-action/osv-scanner-action@v2
+        with:
+          scan-args: |-
+            --recursive
+            ./

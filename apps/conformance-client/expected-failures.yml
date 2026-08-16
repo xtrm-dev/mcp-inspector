@@ -1,0 +1,51 @@
+# MCP Conformance — expected-failures baseline for the full 2026-07-28
+# requirements set. Every entry is a scenario:check-id string (no space
+# after the colon — the harness rejects mapping form).
+#
+# This is a snapshot of what MCP Inspector X's slice-7 adapter does NOT
+# yet implement. Entries should shrink over time, not grow. If a scenario
+# starts passing while listed here, the conformance harness exits 1 with
+# a "stale baseline" message — remove the entry, don't extend it.
+#
+# Auth flows (OAuth 2.1 client, DCR, DPoP, WIF, offline_access, iss/issuer
+# validation) are not part of slice 7 — the adapter has no OAuthProvider
+# wired. The scoreboard job is `continue-on-error: true` so unbaselined
+# regressions there stay visible without blocking merges.
+
+- auth/scope-step-up:step-up-authorize
+- auth/scope-step-up:step-up-refresh
+- auth/scope-step-up:step-up-reauthorize
+- auth/scope-retry-limit:retry-limit
+- auth/token-endpoint-auth-basic:basic-header
+- auth/token-endpoint-auth-basic:basic-refresh
+- auth/token-endpoint-auth-basic:basic-registration
+- auth/token-endpoint-auth-post:post-body
+- auth/token-endpoint-auth-post:post-refresh
+- auth/token-endpoint-auth-post:post-registration
+- auth/token-endpoint-auth-none:none-body
+- auth/token-endpoint-auth-none:none-refresh
+- auth/token-endpoint-auth-none:none-registration
+- auth/pre-registration:pre-registration
+- auth/offline-access-scope:offline-access-scope
+- auth/offline-access-not-supported:offline-access-not-supported
+- auth/authorization-server-migration:as-migration
+- auth/iss-supported:iss-supported
+- auth/iss-not-advertised:iss-not-advertised
+- auth/iss-supported-missing:iss-supported-missing
+- auth/iss-wrong-issuer:iss-wrong-issuer
+- auth/iss-unexpected:iss-unexpected
+- auth/iss-normalized:iss-normalized
+- auth/metadata-issuer-mismatch:metadata-issuer-mismatch
+- sep-2322-client-request-state:request-state-1
+- sep-2322-client-request-state:request-state-2
+- sep-2322-client-request-state:request-state-3
+- sep-2322-client-request-state:request-state-4
+- sep-2322-client-request-state:request-state-5
+- http-custom-headers:custom-headers-1
+- http-custom-headers:custom-headers-2
+- http-custom-headers:custom-headers-3
+- http-custom-headers:custom-headers-4
+- http-custom-headers:custom-headers-5
+- http-invalid-tool-headers:invalid-1
+- http-invalid-tool-headers:invalid-2
+- json-schema-ref-no-deref:no-deref

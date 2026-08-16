@@ -66,3 +66,5 @@ export interface McpClientAdapter {
  * depend on this interface rather than SDK-specific lifecycle details.
  */
 export const protocolAdapterContractVersion = 1 as const;
+
+export { createSdkAdapter } from "./sdk-adapter";

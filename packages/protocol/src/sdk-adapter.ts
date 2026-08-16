@@ -5,6 +5,7 @@ import {
 } from "@modelcontextprotocol/client";
 import {
   MODERN_PROTOCOL_VERSION,
+  TASKS_EXTENSION_KEY,
   type JsonObject,
   type JsonValue,
   type McpClientAdapter,
@@ -63,11 +64,15 @@ export function createSdkAdapter(): McpClientAdapter {
 
       const transport = new StreamableHTTPClientTransport(new URL(descriptor.url));
       const client = new Client(CLIENT_INFO, {
-        // Advertise elicitation so servers may return input_required results.
-        // Manual mode: adapter surfaces InputRequiredResult on evidence and
-        // lets the caller decide how to fulfil (retry with inputResponses is
-        // a later slice — see #5).
-        capabilities: { elicitation: { form: {} } },
+        // Advertise:
+        //   - elicitation.form → servers may return input_required results
+        //   - tasks extension  → servers may return resultType='task' results
+        // Manual mode on inputRequired: adapter surfaces the raw result on
+        // evidence and lets the caller decide how to fulfil / poll.
+        capabilities: {
+          elicitation: { form: {} },
+          extensions: { [TASKS_EXTENSION_KEY]: {} },
+        },
         inputRequired: { autoFulfill: false },
         versionNegotiation,
       });
@@ -114,6 +119,25 @@ export function createSdkAdapter(): McpClientAdapter {
       const era = s.client.getProtocolEra() as ProtocolEra | undefined;
       const version = s.client.getNegotiatedProtocolVersion();
       const responseMeta = (result as { _meta?: unknown })._meta;
+
+      // Tasks extension: SDK v2 removed core Task types (deprecated
+       // 2025-11-25 vocabulary) so we detect the modern task result by its
+       // string discriminant. Full poll/get/cancel lifecycle requires
+       // @modelcontextprotocol/ext-tasks (not installed) — see #5.
+      // ponytail: taskId + status surfaced via evidence; consumer polls externally.
+      const rawResultType = (result as { resultType?: unknown }).resultType;
+      if (rawResultType === "task") {
+        const r = result as { taskId?: unknown; status?: unknown };
+        const extensions: Record<string, JsonValue> = {};
+        if (typeof r.taskId === "string") extensions["taskId"] = r.taskId;
+        if (typeof r.status === "string") extensions["status"] = r.status;
+        const evidence: ProtocolEvidence = { resultType: "task" };
+        if (era) evidence.era = era;
+        if (version) evidence.version = version;
+        if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
+        if (Object.keys(extensions).length > 0) evidence.extensions = extensions;
+        return { value: null, evidence };
+      }
 
       if (isInputRequiredResult(result)) {
         // MRTR: value is null (no tool value yet); consumer inspects

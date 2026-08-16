@@ -38,7 +38,7 @@ export interface ProtocolEvidence {
   era?: ProtocolEra;
   version?: string;
   requestId?: string | number;
-  resultType?: "complete" | "input_required";
+  resultType?: "complete" | "input_required" | "task";
   requestMeta?: JsonObject;
   responseMeta?: JsonObject;
   httpHeaders?: Record<string, string>;
@@ -65,6 +65,19 @@ export interface McpClientAdapter {
  * after its modern-era behavior is covered by conformance tests; product layers
  * depend on this interface rather than SDK-specific lifecycle details.
  */
-export const protocolAdapterContractVersion = 1 as const;
+export const protocolAdapterContractVersion = 2 as const;
+
+/**
+ * Tasks extension key. Client opts in by advertising this in
+ * `clientCapabilities.extensions`; server may then return
+ * `resultType: 'task'` results carrying a taskId the consumer polls.
+ *
+ * ponytail: full poll/get/cancel lifecycle requires `@modelcontextprotocol/ext-tasks`
+ * or re-declared wire schemas (SDK v2 deprecated the 2025 Task vocabulary
+ * and does not ship modern Task types). This adapter advertises the
+ * capability and surfaces incoming task results via evidence — polling
+ * is deferred until the ext-tasks integration slice.
+ */
+export const TASKS_EXTENSION_KEY = "io.modelcontextprotocol/tasks" as const;
 
 export { createSdkAdapter } from "./sdk-adapter";

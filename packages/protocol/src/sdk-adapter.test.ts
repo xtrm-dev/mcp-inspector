@@ -2,7 +2,12 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer, type Server as HttpServer } from "node:http";
 import { z } from "zod";
-import { McpServer, createMcpHandler, type McpHttpHandler } from "@modelcontextprotocol/server";
+import {
+  McpServer,
+  createMcpHandler,
+  inputRequired,
+  type McpHttpHandler,
+} from "@modelcontextprotocol/server";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 
 import { MODERN_PROTOCOL_VERSION, type McpServerDescriptor } from "./index";
@@ -47,6 +52,26 @@ function buildTestMcp(): McpServer {
         structuredContent: { value },
       };
     },
+  );
+  // ask_color — returns InputRequiredResult so the client must fulfil an
+  // elicitation before the tool can complete. Used to exercise MRTR.
+  mcp.registerTool(
+    "ask_color",
+    {
+      title: "Ask Color",
+      description: "Ask the user for their favorite color",
+      inputSchema: z.object({}),
+    },
+    async () =>
+      inputRequired({
+        inputRequests: {
+          color: inputRequired.elicit({
+            message: "What is your favorite color?",
+            requestedSchema: z.object({ color: z.string() }),
+          }),
+        },
+        requestState: "state-token-abc",
+      }),
   );
   return mcp;
 }
@@ -97,7 +122,11 @@ describe("createSdkAdapter (streamable-http, modern era)", () => {
     const tools = await adapter.listTools(descriptor.id);
     const add = tools.find((t) => t.name === "add_numbers");
     expect(add?.title).toBe("Add Numbers");
-    expect(tools.map((t) => t.name).sort()).toEqual(["add_numbers", "slow_echo"]);
+    expect(tools.map((t) => t.name).sort()).toEqual([
+      "add_numbers",
+      "ask_color",
+      "slow_echo",
+    ]);
 
     const { value, evidence } = await adapter.callTool({
       serverId: descriptor.id,
@@ -218,6 +247,38 @@ describe("createSdkAdapter (streamable-http, modern era)", () => {
       arguments: { a: 1, b: 2 },
     });
     expect(value).toEqual({ sum: 3 });
+
+    await adapter.disconnect(descriptor.id);
+  }, 15_000);
+
+  it("surfaces InputRequiredResult in manual mode (MRTR)", async () => {
+    const adapter = createSdkAdapter();
+    const descriptor: McpServerDescriptor = {
+      id: "mrtr",
+      displayName: "MRTR",
+      transport: "streamable-http",
+      url: baseUrl,
+      protocol: { policy: "modern" },
+    };
+    await adapter.connect(descriptor);
+
+    const { value, evidence } = await adapter.callTool({
+      serverId: descriptor.id,
+      name: "ask_color",
+      arguments: {},
+    });
+
+    expect(value).toBeNull();
+    expect(evidence.resultType).toBe("input_required");
+    expect(evidence.era).toBe("modern");
+    const ext = evidence.extensions ?? {};
+    expect(ext["requestState"]).toBe("state-token-abc");
+    // inputRequests is a map keyed by our chosen slot ("color") and each
+    // value carries {method:"elicitation/create", params:{...}} on the wire.
+    const inputRequests = ext["inputRequests"] as
+      | Record<string, { method?: string }>
+      | undefined;
+    expect(inputRequests?.["color"]?.method).toBe("elicitation/create");
 
     await adapter.disconnect(descriptor.id);
   }, 15_000);

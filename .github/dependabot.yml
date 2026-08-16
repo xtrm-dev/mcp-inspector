@@ -12,6 +12,11 @@ updates:
     groups:
       npm-minor-and-patch:
         update-types: [minor, patch]
+    # Wait a few days after a version publishes before proposing an update,
+    # so freshly-compromised releases don't auto-PR straight in.
+    cooldown:
+      default-days: 5
+      semver-major-days: 14
 
   - package-ecosystem: github-actions
     directory: /
@@ -24,3 +29,6 @@ updates:
     groups:
       actions-all:
         patterns: ["*"]
+    cooldown:
+      default-days: 5
+      semver-major-days: 14

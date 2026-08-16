@@ -1,7 +1,9 @@
 name: OSV Scanner
 
 # Vulnerability scanner (OSV.dev) — replaces GHAS Dependency Review.
-# Scans manifests + lockfiles for both dev (default) and main (release).
+# Binary-based invocation — the google/osv-scanner-action namespace has
+# unstable/versioned tags that break `@v2`; running the binary is the
+# cheapest path that also avoids third-party action pinning.
 
 on:
   push:
@@ -9,7 +11,7 @@ on:
   pull_request:
     branches: [dev, main]
   schedule:
-    - cron: "0 6 * * 1"  # Monday 06:00 UTC
+    - cron: "0 6 * * 1"
 
 permissions:
   contents: read
@@ -19,9 +21,17 @@ jobs:
     name: OSV scan
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: google/osv-scanner-action/osv-scanner-action@v2
-        with:
-          scan-args: |-
-            --recursive
-            ./
+      # actions/checkout pinned to v4.2.2 SHA (supply-chain hardening).
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+
+      - name: Install osv-scanner
+        run: |
+          set -euo pipefail
+          VER=2.0.2
+          curl -sSL "https://github.com/google/osv-scanner/releases/download/v${VER}/osv-scanner_linux_amd64" \
+            -o /usr/local/bin/osv-scanner
+          sudo chmod +x /usr/local/bin/osv-scanner
+          osv-scanner --version
+
+      - name: Scan
+        run: osv-scanner --recursive ./

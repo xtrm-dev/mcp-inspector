@@ -1,0 +1,21 @@
+# Gitleaks — extends default rules. Keep the allowlist minimal.
+# Docs: https://github.com/gitleaks/gitleaks/blob/master/README.md#configuration
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Local envs and generated dirs. Narrow patterns only."
+paths = [
+    '''^\.env$''',
+    '''^\.env\.local$''',
+    '''^\.env\.example$''',
+    # Never blanket-allowlist .env.* — tracked .env.production with real creds
+    # must trip. Add specific overrides here only when justified.
+    '''^node_modules/.*''',
+    '''^.*/node_modules/.*''',
+    '''^dist/.*''',
+    '''^.*/dist/.*''',
+    '''^coverage/.*''',
+    '''^\.xtrm/.*''',
+]

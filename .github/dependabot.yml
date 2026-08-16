@@ -1,0 +1,37 @@
+# Dependabot — npm monorepo + GitHub Actions. PRs target `dev` (default).
+version: 2
+updates:
+  # Cooldown delays PRs for freshly-published versions so a compromised
+  # release does not auto-open here on day 0.
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: dev
+    open-pull-requests-limit: 5
+    labels: [dependencies, javascript]
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 3
+
+  # github-actions ecosystem only supports `default-days` under cooldown
+  # (semver-* keys rejected by dependabot for github-actions).
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    target-branch: dev
+    open-pull-requests-limit: 3
+    labels: [dependencies, github-actions]
+    groups:
+      actions-all:
+        patterns: ["*"]
+    cooldown:
+      default-days: 7

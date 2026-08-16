@@ -1,0 +1,35 @@
+name: Semgrep
+
+# SAST (free CodeQL substitute). Diff-aware on PRs (only NEW findings vs base).
+# No push trigger — `semgrep ci` has no baseline on push and would re-flag debt.
+
+on:
+  pull_request:
+    branches: [dev, main]
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  semgrep:
+    name: Semgrep scan
+    runs-on: ubuntu-latest
+    container:
+      image: semgrep/semgrep
+    steps:
+      # actions/checkout pinned to v4.2.2 SHA (supply-chain hardening).
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+      - run: semgrep ci
+        env:
+          SEMGREP_RULES: >-
+            p/default
+            p/security-audit
+            p/secrets
+            p/typescript
+            p/javascript
+            p/nodejs
+            p/github-actions

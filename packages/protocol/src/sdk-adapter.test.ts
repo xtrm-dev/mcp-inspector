@@ -10,7 +10,11 @@ import {
 } from "@modelcontextprotocol/server";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 
-import { MODERN_PROTOCOL_VERSION, type McpServerDescriptor } from "./index";
+import {
+  MODERN_PROTOCOL_VERSION,
+  TASKS_EXTENSION_KEY,
+  type McpServerDescriptor,
+} from "./index";
 import { createSdkAdapter } from "./sdk-adapter";
 
 function buildTestMcp(): McpServer {
@@ -50,6 +54,24 @@ function buildTestMcp(): McpServer {
       return {
         content: [{ type: "text", text: JSON.stringify({ value }) }],
         structuredContent: { value },
+      };
+    },
+  );
+  // reflect_envelope — returns the request's `_meta` envelope as JSON so the
+  // test can inspect what the client actually advertised on the wire.
+  mcp.registerTool(
+    "reflect_envelope",
+    {
+      title: "Reflect Envelope",
+      description: "Echo the per-request _meta envelope back as JSON",
+      inputSchema: z.object({}),
+    },
+    async (_args, ctx) => {
+      const envelope = ctx.mcpReq.envelope ?? {};
+      const json = JSON.stringify(envelope);
+      return {
+        content: [{ type: "text", text: json }],
+        structuredContent: { envelope: JSON.parse(json) },
       };
     },
   );
@@ -125,6 +147,7 @@ describe("createSdkAdapter (streamable-http, modern era)", () => {
     expect(tools.map((t) => t.name).sort()).toEqual([
       "add_numbers",
       "ask_color",
+      "reflect_envelope",
       "slow_echo",
     ]);
 
@@ -279,6 +302,34 @@ describe("createSdkAdapter (streamable-http, modern era)", () => {
       | Record<string, { method?: string }>
       | undefined;
     expect(inputRequests?.["color"]?.method).toBe("elicitation/create");
+
+    await adapter.disconnect(descriptor.id);
+  }, 15_000);
+
+  it("advertises the tasks extension in per-request clientCapabilities", async () => {
+    const adapter = createSdkAdapter();
+    const descriptor: McpServerDescriptor = {
+      id: "tasks-cap",
+      displayName: "Tasks Cap",
+      transport: "streamable-http",
+      url: baseUrl,
+      protocol: { policy: "modern" },
+    };
+    await adapter.connect(descriptor);
+
+    const { value } = await adapter.callTool({
+      serverId: descriptor.id,
+      name: "reflect_envelope",
+      arguments: {},
+    });
+
+    // Server's structuredContent puts the request envelope under `envelope`.
+    const envelope = (value as { envelope?: Record<string, unknown> })?.envelope ?? {};
+    const caps = envelope["io.modelcontextprotocol/clientCapabilities"] as
+      | { extensions?: Record<string, unknown> }
+      | undefined;
+    expect(caps).toBeDefined();
+    expect(caps?.extensions?.[TASKS_EXTENSION_KEY]).toBeDefined();
 
     await adapter.disconnect(descriptor.id);
   }, 15_000);

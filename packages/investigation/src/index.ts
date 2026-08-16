@@ -1,5 +1,5 @@
 import type { ExecutionRecord } from "@mcp-inspector-x/execution";
-import type { JsonValue } from "@mcp-inspector-x/protocol";
+import type { JsonObject, JsonValue, ProtocolEvidence } from "@mcp-inspector-x/protocol";
 
 export interface RedactionRecord {
   path: string;
@@ -39,6 +39,57 @@ export function redactJson(value: JsonValue, path = "$", redactions: RedactionRe
   return { value, redactions };
 }
 
+function redactStringMap(input: Record<string, string> | undefined, path: string, redactions: RedactionRecord[]): Record<string, string> | undefined {
+  if (!input) return undefined;
+  const output: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (SENSITIVE_KEY.test(key)) {
+      output[key] = "[REDACTED]";
+      redactions.push({ path: `${path}.${key}`, reason: "sensitive-key-policy" });
+    } else {
+      output[key] = value;
+    }
+  }
+  return output;
+}
+
+function redactJsonObject(input: JsonObject | undefined, path: string, redactions: RedactionRecord[]): JsonObject | undefined {
+  if (!input) return undefined;
+  return redactJson(input, path, redactions).value as JsonObject;
+}
+
+function redactEvidence(evidence: ProtocolEvidence | undefined, path: string, redactions: RedactionRecord[]): ProtocolEvidence | undefined {
+  if (!evidence) return undefined;
+  const requestMeta = redactJsonObject(evidence.requestMeta, `${path}.requestMeta`, redactions);
+  const responseMeta = redactJsonObject(evidence.responseMeta, `${path}.responseMeta`, redactions);
+  const httpHeaders = redactStringMap(evidence.httpHeaders, `${path}.httpHeaders`, redactions);
+  return {
+    ...evidence,
+    ...(requestMeta ? { requestMeta } : {}),
+    ...(responseMeta ? { responseMeta } : {}),
+    ...(httpHeaders ? { httpHeaders } : {}),
+    ...(evidence.baggage ? { baggage: "[REDACTED]" } : {}),
+  };
+}
+
+function redactExecution(execution: ExecutionRecord, index: number, redactions: RedactionRecord[]): ExecutionRecord {
+  const path = `$.executions[${index}]`;
+  const result = execution.result === undefined ? undefined : redactJson(execution.result, `${path}.result`, redactions).value;
+  const errorDetail = execution.error?.detail === undefined ? undefined : redactJson(execution.error.detail, `${path}.error.detail`, redactions).value;
+  const evidence = redactEvidence(execution.evidence, `${path}.evidence`, redactions);
+  return {
+    ...execution,
+    ...(result === undefined ? {} : { result }),
+    ...(execution.error ? {
+      error: {
+        ...execution.error,
+        ...(errorDetail === undefined ? {} : { detail: errorDetail }),
+      },
+    } : {}),
+    ...(evidence ? { evidence } : {}),
+  };
+}
+
 export function buildInvestigationPacket(input: {
   packetId: string;
   executions: ExecutionRecord[];
@@ -46,10 +97,11 @@ export function buildInvestigationPacket(input: {
 }): InvestigationPacket {
   const redactions: RedactionRecord[] = [];
   const context = input.context === undefined ? undefined : redactJson(input.context, "$.context", redactions).value;
+  const executions = input.executions.map((execution, index) => redactExecution(execution, index, redactions));
   return {
     packetId: input.packetId,
     generatedAt: new Date().toISOString(),
-    executions: input.executions,
+    executions,
     ...(context === undefined ? {} : { context }),
     redactions,
   };

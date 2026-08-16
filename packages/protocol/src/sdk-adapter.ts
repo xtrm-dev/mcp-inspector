@@ -1,4 +1,8 @@
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import {
+  Client,
+  StreamableHTTPClientTransport,
+  isInputRequiredResult,
+} from "@modelcontextprotocol/client";
 import {
   MODERN_PROTOCOL_VERSION,
   type JsonObject,
@@ -59,7 +63,12 @@ export function createSdkAdapter(): McpClientAdapter {
 
       const transport = new StreamableHTTPClientTransport(new URL(descriptor.url));
       const client = new Client(CLIENT_INFO, {
-        capabilities: {},
+        // Advertise elicitation so servers may return input_required results.
+        // Manual mode: adapter surfaces InputRequiredResult on evidence and
+        // lets the caller decide how to fulfil (retry with inputResponses is
+        // a later slice — see #5).
+        capabilities: { elicitation: { form: {} } },
+        inputRequired: { autoFulfill: false },
         versionNegotiation,
       });
 
@@ -93,16 +102,38 @@ export function createSdkAdapter(): McpClientAdapter {
 
     async callTool(input) {
       const s = requireSession(sessions, input.serverId);
+      const callOpts: { signal?: AbortSignal; allowInputRequired: true } = {
+        allowInputRequired: true,
+      };
+      if (input.signal) callOpts.signal = input.signal;
       const result = await s.client.callTool(
         { name: input.name, arguments: input.arguments as Record<string, unknown> },
-        input.signal ? { signal: input.signal } : {},
+        callOpts,
       );
 
-      const value = normalizeResult(result);
       const era = s.client.getProtocolEra() as ProtocolEra | undefined;
       const version = s.client.getNegotiatedProtocolVersion();
       const responseMeta = (result as { _meta?: unknown })._meta;
 
+      if (isInputRequiredResult(result)) {
+        // MRTR: value is null (no tool value yet); consumer inspects
+        // extensions to fulfil the embedded requests and retry.
+        const extensions: Record<string, JsonValue> = {};
+        if (result.inputRequests !== undefined) {
+          extensions["inputRequests"] = result.inputRequests as unknown as JsonValue;
+        }
+        if (result.requestState !== undefined) {
+          extensions["requestState"] = result.requestState;
+        }
+        const evidence: ProtocolEvidence = { resultType: "input_required" };
+        if (era) evidence.era = era;
+        if (version) evidence.version = version;
+        if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
+        if (Object.keys(extensions).length > 0) evidence.extensions = extensions;
+        return { value: null, evidence };
+      }
+
+      const value = normalizeResult(result);
       const evidence: ProtocolEvidence = { resultType: "complete" };
       if (era) evidence.era = era;
       if (version) evidence.version = version;

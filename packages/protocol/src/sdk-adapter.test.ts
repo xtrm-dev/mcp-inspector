@@ -8,7 +8,10 @@ import {
   inputRequired,
   type McpHttpHandler,
 } from "@modelcontextprotocol/server";
-import { toNodeHandler } from "@modelcontextprotocol/node";
+import {
+  toNodeHandler,
+  NodeStreamableHTTPServerTransport,
+} from "@modelcontextprotocol/node";
 
 import {
   MODERN_PROTOCOL_VERSION,
@@ -97,6 +100,96 @@ function buildTestMcp(): McpServer {
   );
   return mcp;
 }
+
+describe("createSdkAdapter (streamable-http, legacy era)", () => {
+  // Legacy 2025-era: use NodeStreamableHTTPServerTransport directly (no
+  // createMcpHandler). McpServer defaults to legacy `SUPPORTED_PROTOCOL_VERSIONS`,
+  // does the pre-2026 `initialize` handshake, and never installs the
+  // `server/discover` handler.
+  let httpServer: HttpServer;
+  let mcp: McpServer;
+  let transport: NodeStreamableHTTPServerTransport;
+  let baseUrl: string;
+
+  beforeAll(async () => {
+    mcp = new McpServer({ name: "legacy-mcp", version: "0.0.1" });
+    mcp.registerTool(
+      "add_numbers",
+      {
+        title: "Add Numbers",
+        inputSchema: z.object({ a: z.number(), b: z.number() }),
+        outputSchema: z.object({ sum: z.number() }),
+      },
+      async ({ a, b }) => ({
+        content: [{ type: "text", text: String(a + b) }],
+        structuredContent: { sum: a + b },
+      }),
+    );
+    transport = new NodeStreamableHTTPServerTransport({
+      sessionIdGenerator: undefined,
+      enableJsonResponse: true,
+    });
+    await mcp.connect(transport);
+    httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
+      void transport.handleRequest(req, res);
+    });
+    await new Promise<void>((resolve, reject) => {
+      httpServer.once("error", reject);
+      httpServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const addr = httpServer.address();
+    if (!addr || typeof addr === "string") throw new Error("no bound address");
+    baseUrl = `http://127.0.0.1:${addr.port}/`;
+  });
+
+  afterAll(async () => {
+    await mcp?.close();
+    await new Promise<void>((resolve) => httpServer?.close(() => resolve()));
+  });
+
+  it("negotiates legacy era via initialize and executes a tool", async () => {
+    const adapter = createSdkAdapter();
+    const descriptor: McpServerDescriptor = {
+      id: "legacy-server",
+      displayName: "Legacy",
+      transport: "streamable-http",
+      url: baseUrl,
+      protocol: { policy: "legacy" },
+    };
+
+    const negotiation = await adapter.connect(descriptor);
+    expect(negotiation.negotiatedEra).toBe("legacy");
+    expect(negotiation.selectedVersion).toBeDefined();
+    // Legacy set must NOT include 2026-07-28.
+    expect(negotiation.selectedVersion).not.toBe(MODERN_PROTOCOL_VERSION);
+
+    const { value, evidence } = await adapter.callTool({
+      serverId: descriptor.id,
+      name: "add_numbers",
+      arguments: { a: 4, b: 5 },
+    });
+    expect(value).toEqual({ sum: 9 });
+    expect(evidence.era).toBe("legacy");
+    expect(evidence.resultType).toBe("complete");
+
+    await adapter.disconnect(descriptor.id);
+  }, 15_000);
+
+  it("policy='auto' against a legacy-only server falls back to legacy", async () => {
+    const adapter = createSdkAdapter();
+    const descriptor: McpServerDescriptor = {
+      id: "auto-legacy",
+      displayName: "Auto Legacy",
+      transport: "streamable-http",
+      url: baseUrl,
+      protocol: { policy: "auto" },
+    };
+
+    const negotiation = await adapter.connect(descriptor);
+    expect(negotiation.negotiatedEra).toBe("legacy");
+    await adapter.disconnect(descriptor.id);
+  }, 15_000);
+});
 
 describe("createSdkAdapter (streamable-http, modern era)", () => {
   let httpServer: HttpServer;

@@ -1,6 +1,9 @@
 # Dependabot — npm monorepo + GitHub Actions. PRs target `dev` (default).
 version: 2
 updates:
+  # Cooldown delays PRs for freshly-published versions so a compromised
+  # release does not auto-open here on day 0.
+  # nosemgrep: package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown
   - package-ecosystem: npm
     directory: /
     schedule:
@@ -12,12 +15,15 @@ updates:
     groups:
       npm-minor-and-patch:
         update-types: [minor, patch]
-    # Wait a few days after a version publishes before proposing an update,
-    # so freshly-compromised releases don't auto-PR straight in.
     cooldown:
       default-days: 5
       semver-major-days: 14
+      semver-minor-days: 5
+      semver-patch-days: 2
 
+  # github-actions dependabot ecosystem only accepts `default-days`,
+  # `include`, `exclude` under cooldown — semver-* keys are rejected.
+  # nosemgrep: package_managers.dependabot.dependabot-missing-cooldown.dependabot-missing-cooldown
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -30,5 +36,4 @@ updates:
       actions-all:
         patterns: ["*"]
     cooldown:
-      default-days: 5
-      semver-major-days: 14
+      default-days: 7

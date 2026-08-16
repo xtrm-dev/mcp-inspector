@@ -34,4 +34,5 @@ jobs:
           osv-scanner --version
 
       - name: Scan
-        run: osv-scanner --recursive ./
+        # v2 CLI: `scan source` is the subcommand; -r walks subdirs.
+        run: osv-scanner scan source -r .

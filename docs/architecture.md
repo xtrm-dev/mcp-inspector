@@ -56,3 +56,7 @@ Legacy compatibility is explicit. Protocol era, version, capabilities, extension
 ## Upstream Inspector policy
 
 The official `modelcontextprotocol/inspector` V2 is a reference and selective implementation source. Its internal `@inspector/core` is not a stable published product dependency. Any source-derived implementation must pin the upstream commit and preserve required attribution/license notices.
+
+## Architectural decisions
+
+- [ADR-0001 — Agent-Run MCP Trace Capture, Correlation, and Replay](adr/0001-agent-run-mcp-trace-capture-and-replay.md)

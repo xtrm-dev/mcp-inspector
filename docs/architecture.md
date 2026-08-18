@@ -60,3 +60,4 @@ The official `modelcontextprotocol/inspector` V2 is a reference and selective im
 ## Architectural decisions
 
 - [ADR-0001 — Agent-Run MCP Trace Capture, Correlation, and Replay](adr/0001-agent-run-mcp-trace-capture-and-replay.md)
+- [ADR-0002 — Modern MCP Trace Context and Local `stdio` Capture](adr/0002-modern-mcp-trace-context-and-local-stdio-capture.md)

@@ -142,6 +142,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         credentialsV1: true,
         runSelected: true,
         runAll: true,
+        agentRuns: true,
       },
     }),
   );
@@ -872,6 +873,34 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       });
     }
     return c.json({ packet: result });
+  });
+
+  // ---- Agent Runs + capture sessions (read-only in this slice) ----
+
+  app.get("/api/v1/capture-sessions", (c) => {
+    const limit = clampLimit(c.req.query("limit"));
+    return c.json({ captureSessions: deps.storage.captureSessions.list({ limit }) });
+  });
+
+  app.get("/api/v1/capture-sessions/:id", (c) => {
+    const id = c.req.param("id");
+    const cs = deps.storage.captureSessions.get(id);
+    if (!cs) return c.json({ error: `unknown capture_session '${id}'` }, 404);
+    const runs = deps.storage.agentRuns.listForCaptureSession(id);
+    return c.json({ captureSession: cs, agentRuns: runs });
+  });
+
+  app.get("/api/v1/agent-runs", (c) => {
+    const limit = clampLimit(c.req.query("limit"));
+    return c.json({ agentRuns: deps.storage.agentRuns.list({ limit }) });
+  });
+
+  app.get("/api/v1/agent-runs/:id", (c) => {
+    const id = c.req.param("id");
+    const run = deps.storage.agentRuns.get(id);
+    if (!run) return c.json({ error: `unknown agent_run '${id}'` }, 404);
+    const executions = deps.storage.executions.listForAgentRun(id);
+    return c.json({ agentRun: run, executions });
   });
 
   app.post("/api/v1/executions/compare", async (c) => {

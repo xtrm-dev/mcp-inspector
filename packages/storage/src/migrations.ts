@@ -165,8 +165,21 @@ CREATE TABLE execution_event (
 CREATE INDEX idx_event_execution ON execution_event(execution_id, seq);
 `;
 
+// Phase L slice 1: link Executions to a CaptureSession + AgentRun so a
+// multi-node workspace run (or later, a captured external-agent session)
+// can be walked as one causal group.
+const V2_AGENT_RUN_LINKS = `
+ALTER TABLE execution ADD COLUMN capture_session_id TEXT
+  REFERENCES capture_session(id) ON DELETE SET NULL;
+ALTER TABLE execution ADD COLUMN agent_run_id TEXT
+  REFERENCES agent_run(id) ON DELETE SET NULL;
+CREATE INDEX idx_execution_agent_run ON execution(agent_run_id, started_at DESC);
+CREATE INDEX idx_execution_capture_session ON execution(capture_session_id, started_at DESC);
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "schema-v1", sql: V1_SCHEMA },
+  { version: 2, name: "agent-run-links", sql: V2_AGENT_RUN_LINKS },
 ];
 
 export function checksum(sql: string): string {

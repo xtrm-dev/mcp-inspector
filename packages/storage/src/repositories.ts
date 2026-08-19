@@ -459,6 +459,7 @@ export interface ExecutionRepository {
   create(input: CreateExecutionInput): ExecutionRecord;
   get(id: string): ExecutionRecord | null;
   list(opts?: { limit?: number }): ExecutionRecord[];
+  listForCapability(capabilityId: string, opts?: { limit?: number }): ExecutionRecord[];
   updateStatus(id: string, status: string, endedAt?: Iso | null): ExecutionRecord;
 }
 
@@ -470,6 +471,9 @@ export function createExecutionRepository(db: SqliteDb): ExecutionRepository {
   `);
   const getStmt = db.prepare("SELECT * FROM execution WHERE id = ?");
   const listStmt = db.prepare("SELECT * FROM execution ORDER BY started_at DESC LIMIT ?");
+  const listCapStmt = db.prepare(
+    "SELECT * FROM execution WHERE capability_id = ? ORDER BY started_at DESC LIMIT ?",
+  );
   const updateStmt = db.prepare(
     "UPDATE execution SET status = @status, ended_at = @ended_at WHERE id = @id",
   );
@@ -496,6 +500,10 @@ export function createExecutionRepository(db: SqliteDb): ExecutionRepository {
     },
     list(opts) {
       const rows = listStmt.all(opts?.limit ?? 100) as ExecutionRow[];
+      return rows.map(rowToExecution);
+    },
+    listForCapability(capabilityId, opts) {
+      const rows = listCapStmt.all(capabilityId, opts?.limit ?? 100) as ExecutionRow[];
       return rows.map(rowToExecution);
     },
     updateStatus(id, status, endedAt) {

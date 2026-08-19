@@ -9,6 +9,7 @@ import {
 } from "@mcp-inspector-x/protocol";
 import type { Storage, EventRow, UpsertServerInput } from "@mcp-inspector-x/storage";
 import type { ServerManager } from "./servers";
+import { compareExecutions } from "./compare";
 
 export type { ServerBinding } from "./servers";
 
@@ -119,6 +120,8 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         persistentWorkspaces: true,
         resources: true,
         prompts: true,
+        executionHistory: true,
+        executionComparison: true,
       },
     }),
   );
@@ -739,7 +742,33 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
 
   app.get("/api/v1/executions", (c) => {
     const limit = clampLimit(c.req.query("limit"));
-    return c.json({ executions: deps.storage.executions.list({ limit }) });
+    const capabilityId = c.req.query("capabilityId");
+    const rows = capabilityId
+      ? deps.storage.executions.listForCapability(capabilityId, { limit })
+      : deps.storage.executions.list({ limit });
+    return c.json({ executions: rows });
+  });
+
+  app.get("/api/v1/capabilities/:capabilityId/executions", (c) => {
+    const capabilityId = c.req.param("capabilityId");
+    const limit = clampLimit(c.req.query("limit"));
+    return c.json({
+      capabilityId,
+      executions: deps.storage.executions.listForCapability(capabilityId, { limit }),
+    });
+  });
+
+  app.post("/api/v1/executions/compare", async (c) => {
+    const body = (await c.req.json().catch(() => null)) as {
+      leftId?: unknown;
+      rightId?: unknown;
+    } | null;
+    if (!body || typeof body.leftId !== "string" || typeof body.rightId !== "string") {
+      return c.json({ error: "'leftId' and 'rightId' (strings) required" }, 400);
+    }
+    const result = compareExecutions(deps.storage, body.leftId, body.rightId);
+    if ("error" in result) return c.json(result, 404);
+    return c.json(result);
   });
 
   app.get("/api/v1/executions/:id", (c) => {

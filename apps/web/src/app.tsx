@@ -41,8 +41,8 @@ export function App() {
     let cancelled = false;
     (async () => {
       try {
-        const serversRes = await fetch("/api/servers");
-        if (!serversRes.ok) throw new Error(`GET /api/servers ${serversRes.status}`);
+        const serversRes = await fetch("/api/v1/servers");
+        if (!serversRes.ok) throw new Error(`GET /api/v1/servers ${serversRes.status}`);
         const { servers: fetchedServers } = (await serversRes.json()) as {
           servers: ServerSummary[];
         };
@@ -54,7 +54,7 @@ export function App() {
         }
         const cards: ToolCard[] = [];
         for (const s of fetchedServers) {
-          const toolsRes = await fetch(`/api/servers/${encodeURIComponent(s.id)}/tools`);
+          const toolsRes = await fetch(`/api/v1/servers/${encodeURIComponent(s.id)}/tools`);
           if (!toolsRes.ok) continue;
           const { tools: toolDefs } = (await toolsRes.json()) as {
             tools: McpToolDefinition[];

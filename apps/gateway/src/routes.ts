@@ -12,6 +12,8 @@ import type { ServerManager } from "./servers";
 import type { SecretsRegistry } from "./secrets";
 import { compareExecutions } from "./compare";
 import { buildPacket, renderPacketMarkdown } from "./packets";
+import { runWorkspace, MAX_CONCURRENCY } from "./executor";
+import { randomUUID } from "node:crypto";
 
 export type { ServerBinding } from "./servers";
 
@@ -66,6 +68,10 @@ const UpdateNodeSchema = z.object({
 });
 const ReorderNodesSchema = z.object({
   orderedIds: z.array(z.string().min(1)).min(1),
+});
+const RunWorkspaceSchema = z.object({
+  nodeIds: z.array(z.string().min(1)).min(1).max(500).optional(),
+  concurrency: z.number().int().min(1).max(MAX_CONCURRENCY).optional(),
 });
 const CredentialProviderSchema = z.enum(["env", "os", "session"]);
 const CreateCredentialSchema = z.object({
@@ -134,6 +140,8 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         executionComparison: true,
         investigationPacketsV2: true,
         credentialsV1: true,
+        runSelected: true,
+        runAll: true,
       },
     }),
   );
@@ -725,6 +733,24 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       payload: { workspaceId, nodeId },
     });
     return c.json({ ok: true });
+  });
+
+  app.post("/api/v1/workspaces/:id/run", async (c) => {
+    const id = c.req.param("id");
+    if (!deps.storage.workspaces.get(id)) return c.json({ error: `unknown workspace '${id}'` }, 404);
+    const parse = RunWorkspaceSchema.safeParse(await c.req.json().catch(() => ({})));
+    if (!parse.success) {
+      return c.json({ error: "invalid body", details: parse.error.issues }, 400);
+    }
+    const runId = randomUUID();
+    const runInput: Parameters<typeof runWorkspace>[1] = { workspaceId: id, runId };
+    if (parse.data.nodeIds !== undefined) runInput.nodeIds = parse.data.nodeIds;
+    if (parse.data.concurrency !== undefined) runInput.concurrency = parse.data.concurrency;
+    const result = await runWorkspace(
+      { adapter: deps.adapter, storage: deps.storage, serverManager: deps.serverManager },
+      runInput,
+    );
+    return c.json(result);
   });
 
   app.post("/api/v1/workspaces/:id/nodes/reorder", async (c) => {

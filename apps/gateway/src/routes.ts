@@ -144,6 +144,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         runAll: true,
         agentRuns: true,
         traceIngestV1: true,
+        sourceRevisionsV1: true,
       },
     }),
   );
@@ -892,6 +893,59 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
   });
 
   // ---- Traces (Phase M slice 1: substrate + ingest, no correlation yet) ----
+
+  // ---- Source revisions (Phase M slice 2: substrate only, indexer is slice 3+) ----
+
+  app.post("/api/v1/source/revisions", async (c) => {
+    const body = (await c.req.json().catch(() => null)) as {
+      repositoryRef?: unknown;
+      revisionHash?: unknown;
+      branch?: unknown;
+      shortSha?: unknown;
+      metadata?: unknown;
+    } | null;
+    if (!body || typeof body.repositoryRef !== "string" || body.repositoryRef.length === 0) {
+      return c.json({ error: "'repositoryRef' (string) required" }, 400);
+    }
+    if (typeof body.revisionHash !== "string" || body.revisionHash.length < 7) {
+      // Enforce "never silently substitute repository main": callers must
+      // provide an explicit revision hash. Empty / missing / <7 chars → 400.
+      return c.json({ error: "'revisionHash' (string, min 7 chars) required" }, 400);
+    }
+    const input: Parameters<typeof deps.storage.sourceRevisions.register>[0] = {
+      repositoryRef: body.repositoryRef,
+      revisionHash: body.revisionHash,
+    };
+    if (typeof body.branch === "string") input.branch = body.branch;
+    if (typeof body.shortSha === "string") input.shortSha = body.shortSha;
+    if (body.metadata !== undefined) input.metadata = body.metadata;
+    const rev = deps.storage.sourceRevisions.register(input);
+    deps.storage.events.append({
+      kind: "source.revision.registered",
+      payload: {
+        repositoryRef: rev.repositoryRef,
+        revisionHash: rev.revisionHash,
+        branch: rev.branch,
+      },
+    });
+    return c.json({ sourceRevision: rev }, 201);
+  });
+
+  app.get("/api/v1/source/revisions", (c) => {
+    const limit = clampLimit(c.req.query("limit"));
+    const repositoryRef = c.req.query("repositoryRef");
+    const rows = repositoryRef
+      ? deps.storage.sourceRevisions.listForRepository(repositoryRef, { limit })
+      : deps.storage.sourceRevisions.list({ limit });
+    return c.json({ sourceRevisions: rows });
+  });
+
+  app.get("/api/v1/source/revisions/:id", (c) => {
+    const id = c.req.param("id");
+    const rev = deps.storage.sourceRevisions.get(id);
+    if (!rev) return c.json({ error: `unknown source_revision '${id}'` }, 404);
+    return c.json({ sourceRevision: rev });
+  });
 
   app.post("/api/v1/traces", async (c) => {
     const body = (await c.req.json().catch(() => null)) as {

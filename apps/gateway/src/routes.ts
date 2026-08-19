@@ -1,24 +1,46 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
+import { z } from "zod";
 import {
   MODERN_PROTOCOL_VERSION,
   type McpClientAdapter,
-  type McpServerDescriptor,
-  type ProtocolNegotiation,
 } from "@mcp-inspector-x/protocol";
-import type { Storage, EventRow } from "@mcp-inspector-x/storage";
+import type { Storage, EventRow, UpsertServerInput } from "@mcp-inspector-x/storage";
+import type { ServerManager } from "./servers";
 
-export interface ServerBinding {
-  descriptor: McpServerDescriptor;
-  negotiation: ProtocolNegotiation;
-}
+export type { ServerBinding } from "./servers";
 
 export interface GatewayDeps {
   adapter: McpClientAdapter;
-  servers: ServerBinding[];
   storage: Storage;
+  serverManager: ServerManager;
 }
+
+// SDK adapter today supports streamable-http; stdio lands when Phase B slice 2
+// wires runner.spawnStdioMcp. Storage schema is broader for forward compat.
+const TransportSchema = z.enum(["streamable-http", "stdio"]);
+const PolicySchema = z.enum(["auto", "modern", "legacy"]);
+
+const CreateServerSchema = z.object({
+  id: z.string().min(1).max(128).optional(),
+  displayName: z.string().min(1).max(200),
+  transport: TransportSchema,
+  endpoint: z.string().min(1).nullable().optional(),
+  protocolPolicy: PolicySchema.optional(),
+  disabled: z.boolean().optional(),
+  credentialRefId: z.string().nullable().optional(),
+  connectNow: z.boolean().optional(),
+});
+
+const UpdateServerSchema = z.object({
+  displayName: z.string().min(1).max(200).optional(),
+  transport: TransportSchema.optional(),
+  endpoint: z.string().min(1).nullable().optional(),
+  protocolPolicy: PolicySchema.optional(),
+  disabled: z.boolean().optional(),
+  credentialRefId: z.string().nullable().optional(),
+});
 
 /**
  * Build the Hono app. Split from index.ts so routes can be exercised in
@@ -56,22 +78,27 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       apiVersion: "v1",
       protocolTarget: MODERN_PROTOCOL_VERSION,
       capabilities: {
-        liveMcpTransport: deps.servers.length > 0,
+        liveMcpTransport: deps.serverManager.bindings().length > 0,
         multiToolWorkspace: true,
         investigationPackets: true,
         sourceIntelligence: false,
         durableExecutionLog: true,
         resumableSse: true,
+        serverCatalogCrud: true,
       },
     }),
   );
 
+  // ---- /api/v1/servers* — real catalog CRUD ----
+
   app.get("/api/v1/servers", (c) => {
     const rows = deps.storage.servers.list();
-    const bindingsById = new Map(deps.servers.map((b) => [b.descriptor.id, b]));
+    const bindings = new Map(
+      deps.serverManager.bindings().map((b) => [b.descriptor.id, b]),
+    );
     return c.json({
       servers: rows.map((s) => {
-        const binding = bindingsById.get(s.id);
+        const binding = bindings.get(s.id);
         return {
           id: s.id,
           displayName: s.displayName,
@@ -81,16 +108,152 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
           disabled: s.disabled,
           createdAt: s.createdAt,
           updatedAt: s.updatedAt,
+          connected: binding !== undefined,
           negotiation: binding?.negotiation ?? null,
         };
       }),
     });
   });
 
+  app.get("/api/v1/servers/:id", (c) => {
+    const id = c.req.param("id");
+    const row = deps.storage.servers.get(id);
+    if (!row) return c.json({ error: `unknown server '${id}'` }, 404);
+    const binding = deps.serverManager.getBinding(id);
+    return c.json({
+      server: {
+        ...row,
+        connected: binding !== undefined,
+        negotiation: binding?.negotiation ?? null,
+      },
+    });
+  });
+
+  app.post("/api/v1/servers", async (c) => {
+    const parse = CreateServerSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parse.success) {
+      return c.json({ error: "invalid body", details: parse.error.issues }, 400);
+    }
+    const body = parse.data;
+    const input: UpsertServerInput = {
+      displayName: body.displayName,
+      transport: body.transport,
+      endpoint: body.endpoint ?? null,
+      protocolPolicy: body.protocolPolicy ?? "auto",
+      disabled: body.disabled ?? false,
+      credentialRefId: body.credentialRefId ?? null,
+    };
+    if (body.id !== undefined) input.id = body.id;
+    const created = body.id
+      ? deps.storage.servers.upsertById({ ...input, id: body.id })
+      : deps.storage.servers.create(input);
+    deps.storage.events.append({
+      kind: "server.created",
+      payload: { serverId: created.id, transport: created.transport },
+    });
+
+    let negotiation: unknown = null;
+    if (body.connectNow && !created.disabled) {
+      try {
+        const binding = await deps.serverManager.connect(created);
+        negotiation = binding.negotiation;
+      } catch (err) {
+        return c.json(
+          {
+            server: created,
+            connected: false,
+            connectError: err instanceof Error ? err.message : String(err),
+          },
+          201,
+        );
+      }
+    }
+    return c.json({ server: created, connected: negotiation !== null, negotiation }, 201);
+  });
+
+  app.patch("/api/v1/servers/:id", async (c) => {
+    const id = c.req.param("id");
+    const existing = deps.storage.servers.get(id);
+    if (!existing) return c.json({ error: `unknown server '${id}'` }, 404);
+
+    const parse = UpdateServerSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parse.success) {
+      return c.json({ error: "invalid body", details: parse.error.issues }, 400);
+    }
+    // Strip undefined keys so Partial<UpsertServerInput> honors exactOptionalPropertyTypes.
+    const patch: Parameters<typeof deps.storage.servers.update>[1] = {};
+    for (const [k, v] of Object.entries(parse.data)) {
+      if (v !== undefined) (patch as Record<string, unknown>)[k] = v;
+    }
+    const updated = deps.storage.servers.update(id, patch);
+    deps.storage.events.append({
+      kind: "server.updated",
+      payload: { serverId: id, changedKeys: Object.keys(parse.data) },
+    });
+
+    // If materially changed while connected, reconnect so the binding stays honest.
+    const materialChange =
+      parse.data.transport !== undefined ||
+      parse.data.endpoint !== undefined ||
+      parse.data.protocolPolicy !== undefined ||
+      parse.data.disabled === true;
+    if (materialChange) {
+      await deps.serverManager.reconnectIfConnected(updated).catch(() => {});
+    }
+    return c.json({ server: updated });
+  });
+
+  app.delete("/api/v1/servers/:id", async (c) => {
+    const id = c.req.param("id");
+    const existing = deps.storage.servers.get(id);
+    if (!existing) return c.json({ error: `unknown server '${id}'` }, 404);
+    await deps.serverManager.disconnect(id);
+    deps.storage.servers.delete(id);
+    deps.storage.events.append({ kind: "server.deleted", payload: { serverId: id } });
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/v1/servers/:id/connect", async (c) => {
+    const id = c.req.param("id");
+    const row = deps.storage.servers.get(id);
+    if (!row) return c.json({ error: `unknown server '${id}'` }, 404);
+    if (deps.serverManager.getBinding(id)) {
+      return c.json({ connected: true, negotiation: deps.serverManager.getBinding(id)!.negotiation });
+    }
+    try {
+      const binding = await deps.serverManager.connect(row);
+      return c.json({ connected: true, negotiation: binding.negotiation });
+    } catch (err) {
+      return c.json({ connected: false, error: err instanceof Error ? err.message : String(err) }, 502);
+    }
+  });
+
+  app.post("/api/v1/servers/:id/disconnect", async (c) => {
+    const id = c.req.param("id");
+    const row = deps.storage.servers.get(id);
+    if (!row) return c.json({ error: `unknown server '${id}'` }, 404);
+    await deps.serverManager.disconnect(id);
+    return c.json({ connected: false });
+  });
+
+  app.post("/api/v1/servers/:id/test-connection", async (c) => {
+    const id = c.req.param("id");
+    const row = deps.storage.servers.get(id);
+    if (!row) return c.json({ error: `unknown server '${id}'` }, 404);
+    const result = await deps.serverManager.testConnection(row);
+    deps.storage.events.append({
+      kind: "server.testConnection",
+      payload: { serverId: id, ...result },
+    });
+    return c.json(result);
+  });
+
+  // ---- Tools + tool call (unchanged from slice 2) ----
+
   app.get("/api/v1/servers/:id/tools", async (c) => {
     const id = c.req.param("id");
-    if (!deps.servers.some((s) => s.descriptor.id === id)) {
-      return c.json({ error: `unknown server '${id}'` }, 404);
+    if (!deps.serverManager.getBinding(id)) {
+      return c.json({ error: `server '${id}' not connected` }, 409);
     }
     try {
       const tools = await deps.adapter.listTools(id);
@@ -103,8 +266,8 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
   app.post("/api/v1/servers/:id/tools/:name/call", async (c) => {
     const id = c.req.param("id");
     const name = c.req.param("name");
-    if (!deps.servers.some((s) => s.descriptor.id === id)) {
-      return c.json({ error: `unknown server '${id}'` }, 404);
+    if (!deps.serverManager.getBinding(id)) {
+      return c.json({ error: `server '${id}' not connected` }, 409);
     }
 
     let args: Record<string, unknown> = {};
@@ -120,8 +283,6 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       // fallthrough — treat as empty args
     }
 
-    // Open an Execution before dispatch; write-through into storage so the
-    // durable log observes every tool call (Phase A slice 2 acceptance).
     const capabilityId = `${id}::tool::${name}`;
     const execution = deps.storage.executions.create({ serverId: id, capabilityId });
     deps.storage.events.append({
@@ -272,8 +433,6 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
 
 // Inline-vs-artifact split: results ≤ 16KiB stringified stay in SQLite;
 // anything larger is written to the artifact store and referenced by hash.
-// Threshold tuned high enough that typical tool responses stay inline; low
-// enough that a single row does not carry MB of payload.
 const INLINE_RESULT_LIMIT = 16 * 1024;
 
 async function sendEvent(

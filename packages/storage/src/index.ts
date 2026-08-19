@@ -25,6 +25,8 @@ export {
   createExecutionRepository,
   createExecutionRoundRepository,
   createEvidenceRepository,
+  createCaptureSessionRepository,
+  createAgentRunRepository,
   createEventLog,
   type ServerRepository,
   type ServerDefinition,
@@ -55,6 +57,14 @@ export {
   type EvidenceRef,
   type AppendEvidenceInput,
   type EvidenceKind,
+  type CaptureSessionRepository,
+  type CaptureSession,
+  type CreateCaptureSessionInput,
+  type CaptureKind,
+  type AgentRunRepository,
+  type AgentRun,
+  type CreateAgentRunInput,
+  type CorrelationKind,
   type EventLog,
   type EventRow,
   type AppendEventInput,
@@ -72,6 +82,8 @@ import {
   createExecutionRepository,
   createExecutionRoundRepository,
   createEvidenceRepository,
+  createCaptureSessionRepository,
+  createAgentRunRepository,
   createEventLog,
   type ServerRepository,
   type CredentialRefRepository,
@@ -80,6 +92,8 @@ import {
   type ExecutionRepository,
   type ExecutionRoundRepository,
   type EvidenceRepository,
+  type CaptureSessionRepository,
+  type AgentRunRepository,
   type EventLog,
 } from "./repositories";
 import { join } from "node:path";
@@ -98,6 +112,8 @@ export interface Storage {
   executions: ExecutionRepository;
   rounds: ExecutionRoundRepository;
   evidence: EvidenceRepository;
+  captureSessions: CaptureSessionRepository;
+  agentRuns: AgentRunRepository;
   events: EventLog;
   close(): void;
 }
@@ -120,6 +136,8 @@ export function openStorage(options: StorageOptions): Storage {
     executions: createExecutionRepository(db),
     rounds: createExecutionRoundRepository(db),
     evidence: createEvidenceRepository(db),
+    captureSessions: createCaptureSessionRepository(db),
+    agentRuns: createAgentRunRepository(db),
     events: createEventLog(db),
     close() {
       db.close();

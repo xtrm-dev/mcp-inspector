@@ -25,6 +25,8 @@ export interface ExecuteToolInput {
   arguments: Record<string, unknown>;
   workspaceId?: string;
   workspaceNodeId?: string;
+  captureSessionId?: string;
+  agentRunId?: string;
 }
 
 export interface ExecuteResult {
@@ -54,6 +56,8 @@ export async function executeTool(
   };
   if (input.workspaceId !== undefined) createExecInput.workspaceId = input.workspaceId;
   if (input.workspaceNodeId !== undefined) createExecInput.workspaceNodeId = input.workspaceNodeId;
+  if (input.captureSessionId !== undefined) createExecInput.captureSessionId = input.captureSessionId;
+  if (input.agentRunId !== undefined) createExecInput.agentRunId = input.agentRunId;
   const execution = deps.storage.executions.create(createExecInput);
 
   const payload: Record<string, unknown> = {
@@ -166,6 +170,8 @@ export async function executeTool(
 export interface WorkspaceRunResult {
   runId: string;
   workspaceId: string;
+  captureSessionId: string;
+  agentRunId: string;
   concurrency: number;
   nodes: Array<{
     nodeId: string;
@@ -194,25 +200,39 @@ export async function runWorkspace(
   const nodes = allNodes.filter((n) => targetIds.has(n.id));
   const concurrency = clampConcurrency(input.concurrency);
 
+  // Auto-open a CaptureSession + AgentRun so every Execution in this run is
+  // walkable as one causal group. Correlation kind is 'inspector-run' —
+  // this run originates in the Inspector itself, not from an outside agent.
+  const captureSession = deps.storage.captureSessions.create({
+    kind: "workspace-run",
+    metadata: { workspaceId: input.workspaceId, runId: input.runId },
+  });
+  const agentRun = deps.storage.agentRuns.create({
+    captureSessionId: captureSession.id,
+    correlationKind: "inspector-run",
+    correlationKey: input.runId,
+    metadata: { workspaceId: input.workspaceId, runId: input.runId },
+  });
+
   deps.storage.events.append({
     kind: "workspace.run.started",
     payload: {
       workspaceId: input.workspaceId,
       runId: input.runId,
+      captureSessionId: captureSession.id,
+      agentRunId: agentRun.id,
       nodeCount: nodes.length,
       concurrency,
     },
   });
 
-  // dispatchNode always resolves; the runConcurrent envelope is unwrapped here.
   const envelopes = await runConcurrent(
     nodes,
-    async (node) => dispatchNode(deps, input.workspaceId, input.runId, node),
+    async (node) => dispatchNode(deps, input.workspaceId, input.runId, node, captureSession.id, agentRun.id),
     concurrency,
   );
   const results = envelopes.map((env, i) => {
     if (env.ok) return env.value;
-    // Unreachable — dispatchNode swallows failures. Guard for defensive parity.
     const node = nodes[i]!;
     return {
       nodeId: node.id,
@@ -222,18 +242,29 @@ export async function runWorkspace(
     };
   });
 
+  deps.storage.agentRuns.end(agentRun.id);
+  deps.storage.captureSessions.end(captureSession.id);
   deps.storage.events.append({
     kind: "workspace.run.finished",
     payload: {
       workspaceId: input.workspaceId,
       runId: input.runId,
+      captureSessionId: captureSession.id,
+      agentRunId: agentRun.id,
       okCount: results.filter((r) => r.ok).length,
       failCount: results.filter((r) => !r.ok && r.skippedReason === undefined).length,
       skippedCount: results.filter((r) => r.skippedReason !== undefined).length,
     },
   });
 
-  return { runId: input.runId, workspaceId: input.workspaceId, concurrency, nodes: results };
+  return {
+    runId: input.runId,
+    workspaceId: input.workspaceId,
+    captureSessionId: captureSession.id,
+    agentRunId: agentRun.id,
+    concurrency,
+    nodes: results,
+  };
 }
 
 async function dispatchNode(
@@ -241,6 +272,8 @@ async function dispatchNode(
   workspaceId: string,
   runId: string,
   node: WorkspaceNode,
+  captureSessionId: string,
+  agentRunId: string,
 ): Promise<WorkspaceRunResult["nodes"][number]> {
   const base = { nodeId: node.id, capabilityId: node.capabilityId };
 
@@ -271,6 +304,8 @@ async function dispatchNode(
     arguments: args,
     workspaceId,
     workspaceNodeId: node.id,
+    captureSessionId,
+    agentRunId,
   };
   const r = await executeTool(deps, executeInput);
   deps.storage.events.append({

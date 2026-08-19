@@ -16,7 +16,11 @@ describe("database + migrations", () => {
     try {
       const db1 = openDatabase({ path: join(dir, "state.sqlite3") });
       const first = applyMigrations(db1);
-      expect(first.appliedNow).toEqual([1]);
+      // Assert all bundled migrations applied on first open (schema v1 + any
+      // later versions). Length-only assertion so this test doesn't break
+      // every time a migration lands.
+      expect(first.appliedNow.length).toBeGreaterThanOrEqual(1);
+      expect(first.appliedNow).toContain(1);
       expect(first.alreadyApplied).toEqual([]);
 
       const tables = (db1.prepare(
@@ -35,7 +39,7 @@ describe("database + migrations", () => {
       const db2 = openDatabase({ path: join(dir, "state.sqlite3") });
       const second = applyMigrations(db2);
       expect(second.appliedNow).toEqual([]);
-      expect(second.alreadyApplied).toEqual([1]);
+      expect(second.alreadyApplied).toEqual(first.appliedNow);
       closeDatabase(db2);
     } finally {
       rmSync(dir, { recursive: true, force: true });

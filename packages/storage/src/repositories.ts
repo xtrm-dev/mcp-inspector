@@ -494,6 +494,8 @@ export interface ExecutionRecord {
   id: string;
   workspaceId: string | null;
   workspaceNodeId: string | null;
+  captureSessionId: string | null;
+  agentRunId: string | null;
   serverId: string;
   capabilityId: string;
   status: string;
@@ -505,6 +507,8 @@ export interface CreateExecutionInput {
   id?: string;
   workspaceId?: string | null;
   workspaceNodeId?: string | null;
+  captureSessionId?: string | null;
+  agentRunId?: string | null;
   serverId: string;
   capabilityId: string;
   status?: string;
@@ -514,6 +518,8 @@ interface ExecutionRow {
   id: string;
   workspace_id: string | null;
   workspace_node_id: string | null;
+  capture_session_id: string | null;
+  agent_run_id: string | null;
   server_id: string;
   capability_id: string;
   status: string;
@@ -526,6 +532,8 @@ function rowToExecution(row: ExecutionRow): ExecutionRecord {
     id: row.id,
     workspaceId: row.workspace_id,
     workspaceNodeId: row.workspace_node_id,
+    captureSessionId: row.capture_session_id,
+    agentRunId: row.agent_run_id,
     serverId: row.server_id,
     capabilityId: row.capability_id,
     status: row.status,
@@ -539,19 +547,25 @@ export interface ExecutionRepository {
   get(id: string): ExecutionRecord | null;
   list(opts?: { limit?: number }): ExecutionRecord[];
   listForCapability(capabilityId: string, opts?: { limit?: number }): ExecutionRecord[];
+  listForAgentRun(agentRunId: string, opts?: { limit?: number }): ExecutionRecord[];
   updateStatus(id: string, status: string, endedAt?: Iso | null): ExecutionRecord;
 }
 
 export function createExecutionRepository(db: SqliteDb): ExecutionRepository {
   const insert = db.prepare(`
     INSERT INTO execution
-      (id, workspace_id, workspace_node_id, server_id, capability_id, status, started_at, ended_at)
-    VALUES (@id, @workspace_id, @workspace_node_id, @server_id, @capability_id, @status, @started_at, @ended_at)
+      (id, workspace_id, workspace_node_id, capture_session_id, agent_run_id,
+       server_id, capability_id, status, started_at, ended_at)
+    VALUES (@id, @workspace_id, @workspace_node_id, @capture_session_id, @agent_run_id,
+            @server_id, @capability_id, @status, @started_at, @ended_at)
   `);
   const getStmt = db.prepare("SELECT * FROM execution WHERE id = ?");
   const listStmt = db.prepare("SELECT * FROM execution ORDER BY started_at DESC LIMIT ?");
   const listCapStmt = db.prepare(
     "SELECT * FROM execution WHERE capability_id = ? ORDER BY started_at DESC LIMIT ?",
+  );
+  const listAgentStmt = db.prepare(
+    "SELECT * FROM execution WHERE agent_run_id = ? ORDER BY started_at ASC LIMIT ?",
   );
   const updateStmt = db.prepare(
     "UPDATE execution SET status = @status, ended_at = @ended_at WHERE id = @id",
@@ -564,6 +578,8 @@ export function createExecutionRepository(db: SqliteDb): ExecutionRepository {
         id,
         workspace_id: input.workspaceId ?? null,
         workspace_node_id: input.workspaceNodeId ?? null,
+        capture_session_id: input.captureSessionId ?? null,
+        agent_run_id: input.agentRunId ?? null,
         server_id: input.serverId,
         capability_id: input.capabilityId,
         status: input.status ?? "queued",
@@ -583,6 +599,10 @@ export function createExecutionRepository(db: SqliteDb): ExecutionRepository {
     },
     listForCapability(capabilityId, opts) {
       const rows = listCapStmt.all(capabilityId, opts?.limit ?? 100) as ExecutionRow[];
+      return rows.map(rowToExecution);
+    },
+    listForAgentRun(agentRunId, opts) {
+      const rows = listAgentStmt.all(agentRunId, opts?.limit ?? 1000) as ExecutionRow[];
       return rows.map(rowToExecution);
     },
     updateStatus(id, status, endedAt) {
@@ -772,6 +792,195 @@ export function createEvidenceRepository(db: SqliteDb): EvidenceRepository {
     },
     listForExecution(executionId) {
       return (listStmt.all(executionId) as EvidenceRow[]).map(rowToEvidence);
+    },
+  };
+}
+
+// ---------- Capture sessions + agent runs ----------
+
+export type CaptureKind =
+  | "inspector"
+  | "gateway-http"
+  | "stdio-proxy"
+  | "trace-ingest"
+  | "adapter"
+  | "workspace-run";
+
+export interface CaptureSession {
+  id: string;
+  kind: CaptureKind;
+  startedAt: Iso;
+  endedAt: Iso | null;
+  metadata: unknown;
+}
+
+export interface CreateCaptureSessionInput {
+  id?: string;
+  kind: CaptureKind;
+  metadata?: unknown;
+}
+
+interface CaptureSessionRow {
+  id: string;
+  kind: string;
+  started_at: string;
+  ended_at: string | null;
+  metadata_json: string | null;
+}
+
+function rowToCaptureSession(row: CaptureSessionRow): CaptureSession {
+  return {
+    id: row.id,
+    kind: row.kind as CaptureKind,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    metadata: row.metadata_json ? JSON.parse(row.metadata_json) : null,
+  };
+}
+
+export interface CaptureSessionRepository {
+  create(input: CreateCaptureSessionInput): CaptureSession;
+  get(id: string): CaptureSession | null;
+  list(opts?: { limit?: number }): CaptureSession[];
+  end(id: string): CaptureSession;
+}
+
+export function createCaptureSessionRepository(db: SqliteDb): CaptureSessionRepository {
+  const insert = db.prepare(`
+    INSERT INTO capture_session (id, kind, started_at, ended_at, metadata_json)
+    VALUES (@id, @kind, @started_at, NULL, @metadata_json)
+  `);
+  const getStmt = db.prepare("SELECT * FROM capture_session WHERE id = ?");
+  const listStmt = db.prepare("SELECT * FROM capture_session ORDER BY started_at DESC LIMIT ?");
+  const endStmt = db.prepare("UPDATE capture_session SET ended_at = ? WHERE id = ?");
+
+  function getOrThrow(id: string): CaptureSession {
+    const row = getStmt.get(id) as CaptureSessionRow | undefined;
+    if (!row) throw new Error(`capture_session ${id} not found`);
+    return rowToCaptureSession(row);
+  }
+
+  return {
+    create(input) {
+      const id = input.id ?? randomUUID();
+      insert.run({
+        id,
+        kind: input.kind,
+        started_at: nowIso(),
+        metadata_json: input.metadata === undefined ? null : JSON.stringify(input.metadata),
+      });
+      return getOrThrow(id);
+    },
+    get(id) {
+      const row = getStmt.get(id) as CaptureSessionRow | undefined;
+      return row ? rowToCaptureSession(row) : null;
+    },
+    list(opts) {
+      return (listStmt.all(opts?.limit ?? 100) as CaptureSessionRow[]).map(rowToCaptureSession);
+    },
+    end(id) {
+      endStmt.run(nowIso(), id);
+      return getOrThrow(id);
+    },
+  };
+}
+
+export type CorrelationKind = "w3c-trace" | "inspector-run" | "protocol" | "inference";
+
+export interface AgentRun {
+  id: string;
+  captureSessionId: string;
+  correlationKind: CorrelationKind;
+  correlationKey: string | null;
+  startedAt: Iso;
+  endedAt: Iso | null;
+  metadata: unknown;
+}
+
+export interface CreateAgentRunInput {
+  id?: string;
+  captureSessionId: string;
+  correlationKind: CorrelationKind;
+  correlationKey?: string | null;
+  metadata?: unknown;
+}
+
+interface AgentRunRow {
+  id: string;
+  capture_session_id: string;
+  correlation_kind: string;
+  correlation_key: string | null;
+  started_at: string;
+  ended_at: string | null;
+  metadata_json: string | null;
+}
+
+function rowToAgentRun(row: AgentRunRow): AgentRun {
+  return {
+    id: row.id,
+    captureSessionId: row.capture_session_id,
+    correlationKind: row.correlation_kind as CorrelationKind,
+    correlationKey: row.correlation_key,
+    startedAt: row.started_at,
+    endedAt: row.ended_at,
+    metadata: row.metadata_json ? JSON.parse(row.metadata_json) : null,
+  };
+}
+
+export interface AgentRunRepository {
+  create(input: CreateAgentRunInput): AgentRun;
+  get(id: string): AgentRun | null;
+  list(opts?: { limit?: number }): AgentRun[];
+  listForCaptureSession(captureSessionId: string): AgentRun[];
+  end(id: string): AgentRun;
+}
+
+export function createAgentRunRepository(db: SqliteDb): AgentRunRepository {
+  const insert = db.prepare(`
+    INSERT INTO agent_run
+      (id, capture_session_id, correlation_kind, correlation_key, started_at, ended_at, metadata_json)
+    VALUES
+      (@id, @capture_session_id, @correlation_kind, @correlation_key, @started_at, NULL, @metadata_json)
+  `);
+  const getStmt = db.prepare("SELECT * FROM agent_run WHERE id = ?");
+  const listStmt = db.prepare("SELECT * FROM agent_run ORDER BY started_at DESC LIMIT ?");
+  const listForSessionStmt = db.prepare(
+    "SELECT * FROM agent_run WHERE capture_session_id = ? ORDER BY started_at ASC",
+  );
+  const endStmt = db.prepare("UPDATE agent_run SET ended_at = ? WHERE id = ?");
+
+  function getOrThrow(id: string): AgentRun {
+    const row = getStmt.get(id) as AgentRunRow | undefined;
+    if (!row) throw new Error(`agent_run ${id} not found`);
+    return rowToAgentRun(row);
+  }
+
+  return {
+    create(input) {
+      const id = input.id ?? randomUUID();
+      insert.run({
+        id,
+        capture_session_id: input.captureSessionId,
+        correlation_kind: input.correlationKind,
+        correlation_key: input.correlationKey ?? null,
+        started_at: nowIso(),
+        metadata_json: input.metadata === undefined ? null : JSON.stringify(input.metadata),
+      });
+      return getOrThrow(id);
+    },
+    get(id) {
+      const row = getStmt.get(id) as AgentRunRow | undefined;
+      return row ? rowToAgentRun(row) : null;
+    },
+    list(opts) {
+      return (listStmt.all(opts?.limit ?? 100) as AgentRunRow[]).map(rowToAgentRun);
+    },
+    listForCaptureSession(captureSessionId) {
+      return (listForSessionStmt.all(captureSessionId) as AgentRunRow[]).map(rowToAgentRun);
+    },
+    end(id) {
+      endStmt.run(nowIso(), id);
+      return getOrThrow(id);
     },
   };
 }

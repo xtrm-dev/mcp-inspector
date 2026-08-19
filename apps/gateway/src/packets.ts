@@ -66,6 +66,8 @@ export interface BuildPacketInput {
   tier?: PacketTier;
   packetId?: string;
   now?: () => Date;
+  /** Known-secret set (from SecretsRegistry.known()) for value-based scrub. */
+  knownSecrets?: ReadonlySet<string>;
 }
 
 export function buildPacket(input: BuildPacketInput): InvestigationPacketV2 | { error: string } {
@@ -82,7 +84,47 @@ export function buildPacket(input: BuildPacketInput): InvestigationPacketV2 | { 
     executions.push(assemble(snap, tier, input.storage, redactions, missing));
   }
 
-  return { packetId, generatedAt, tier, executions, redactions, missing };
+  const packet: InvestigationPacketV2 = {
+    packetId,
+    generatedAt,
+    tier,
+    executions,
+    redactions,
+    missing,
+  };
+
+  // Second pass: replace any known-secret substring by value across the whole
+  // packet. Belt-and-suspenders with the sensitive-key regex — if a secret
+  // arrives via a non-flagged key path, this catches it.
+  if (input.knownSecrets && input.knownSecrets.size > 0) {
+    return scrubKnownSecrets(packet, input.knownSecrets);
+  }
+  return packet;
+}
+
+function scrubKnownSecrets(
+  packet: InvestigationPacketV2,
+  known: ReadonlySet<string>,
+): InvestigationPacketV2 {
+  const secrets = Array.from(known).filter((s) => s.length > 0);
+  if (secrets.length === 0) return packet;
+  const scrubbed = JSON.parse(JSON.stringify(packet, (_key, value) => {
+    if (typeof value !== "string") return value;
+    let out = value;
+    for (const secret of secrets) {
+      if (out.includes(secret)) out = out.split(secret).join("[REDACTED]");
+    }
+    return out;
+  })) as InvestigationPacketV2;
+  // Record a top-level redaction note if we mutated anything.
+  const changed = JSON.stringify(scrubbed) !== JSON.stringify(packet);
+  if (changed) {
+    scrubbed.redactions = [
+      ...scrubbed.redactions,
+      { path: "$", reason: "known-secret-value-policy" },
+    ];
+  }
+  return scrubbed;
 }
 
 function assemble(

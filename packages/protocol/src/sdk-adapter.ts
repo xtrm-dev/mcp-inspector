@@ -67,7 +67,12 @@ export function createSdkAdapter(): McpClientAdapter {
             ? ({ mode: { pin: MODERN_PROTOCOL_VERSION } } as const)
             : ({ mode: "auto" } as const);
 
-      const transport = new StreamableHTTPClientTransport(new URL(descriptor.url));
+      const transportOpts: ConstructorParameters<typeof StreamableHTTPClientTransport>[1] = {};
+      if (descriptor.bearerToken !== undefined) {
+        const token = descriptor.bearerToken;
+        transportOpts.authProvider = { token: async () => token };
+      }
+      const transport = new StreamableHTTPClientTransport(new URL(descriptor.url), transportOpts);
       const client = new Client(CLIENT_INFO, {
         // Advertise:
         //   - elicitation.form → servers may return input_required results

@@ -985,6 +985,92 @@ export function createAgentRunRepository(db: SqliteDb): AgentRunRepository {
   };
 }
 
+// ---------- Traces ----------
+
+export interface TraceRecord {
+  id: string;
+  traceId: string;
+  spanCount: number;
+  spans: unknown;
+  ingestedAt: Iso;
+  source: string | null;
+}
+
+export interface PutTraceInput {
+  traceId: string;
+  spans: unknown[];
+  source?: string;
+}
+
+interface TraceRow {
+  id: string;
+  trace_id: string;
+  span_count: number;
+  spans_json: string;
+  ingested_at: string;
+  source: string | null;
+}
+
+function rowToTrace(row: TraceRow): TraceRecord {
+  return {
+    id: row.id,
+    traceId: row.trace_id,
+    spanCount: row.span_count,
+    spans: JSON.parse(row.spans_json),
+    ingestedAt: row.ingested_at,
+    source: row.source,
+  };
+}
+
+export interface TraceRepository {
+  put(input: PutTraceInput): TraceRecord;
+  get(traceId: string): TraceRecord | null;
+  list(opts?: { limit?: number }): TraceRecord[];
+  delete(traceId: string): void;
+}
+
+export function createTraceRepository(db: SqliteDb): TraceRepository {
+  const upsert = db.prepare(`
+    INSERT INTO trace (id, trace_id, span_count, spans_json, ingested_at, source)
+    VALUES (@id, @trace_id, @span_count, @spans_json, @ingested_at, @source)
+    ON CONFLICT(trace_id) DO UPDATE SET
+      span_count  = excluded.span_count,
+      spans_json  = excluded.spans_json,
+      ingested_at = excluded.ingested_at,
+      source      = excluded.source
+  `);
+  const getStmt = db.prepare("SELECT * FROM trace WHERE trace_id = ?");
+  const listStmt = db.prepare("SELECT * FROM trace ORDER BY ingested_at DESC LIMIT ?");
+  const delStmt = db.prepare("DELETE FROM trace WHERE trace_id = ?");
+
+  return {
+    put(input) {
+      const id = randomUUID();
+      const spansJson = JSON.stringify(input.spans);
+      upsert.run({
+        id,
+        trace_id: input.traceId,
+        span_count: input.spans.length,
+        spans_json: spansJson,
+        ingested_at: nowIso(),
+        source: input.source ?? null,
+      });
+      const row = getStmt.get(input.traceId) as TraceRow;
+      return rowToTrace(row);
+    },
+    get(traceId) {
+      const row = getStmt.get(traceId) as TraceRow | undefined;
+      return row ? rowToTrace(row) : null;
+    },
+    list(opts) {
+      return (listStmt.all(opts?.limit ?? 100) as TraceRow[]).map(rowToTrace);
+    },
+    delete(traceId) {
+      delStmt.run(traceId);
+    },
+  };
+}
+
 // ---------- Append-only event log + live subscription ----------
 
 export interface EventRow {

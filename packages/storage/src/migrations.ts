@@ -177,9 +177,26 @@ CREATE INDEX idx_execution_agent_run ON execution(agent_run_id, started_at DESC)
 CREATE INDEX idx_execution_capture_session ON execution(capture_session_id, started_at DESC);
 `;
 
+// Phase M slice 1: minimal trace table for ingested runtime traces. Each
+// record carries a raw JSON blob of spans (OTLP-shaped later); AgentRun
+// linkage lives in the correlation_kind='w3c-trace' path and is populated
+// in Phase M slice 2.
+const V3_TRACES = `
+CREATE TABLE trace (
+  id            TEXT PRIMARY KEY,
+  trace_id      TEXT NOT NULL UNIQUE,
+  span_count    INTEGER NOT NULL,
+  spans_json    TEXT NOT NULL,
+  ingested_at   TEXT NOT NULL,
+  source        TEXT
+);
+CREATE INDEX idx_trace_ingested ON trace(ingested_at DESC);
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "schema-v1", sql: V1_SCHEMA },
   { version: 2, name: "agent-run-links", sql: V2_AGENT_RUN_LINKS },
+  { version: 3, name: "traces", sql: V3_TRACES },
 ];
 
 export function checksum(sql: string): string {

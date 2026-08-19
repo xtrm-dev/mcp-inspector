@@ -9,6 +9,11 @@ import {
   type JsonObject,
   type JsonValue,
   type McpClientAdapter,
+  type McpPromptDefinition,
+  type McpPromptMessage,
+  type McpResourceContent,
+  type McpResourceDefinition,
+  type McpResourceTemplateDefinition,
   type McpServerDescriptor,
   type McpToolDefinition,
   type ProtocolEra,
@@ -165,6 +170,64 @@ export function createSdkAdapter(): McpClientAdapter {
       return { value, evidence };
     },
 
+    async listResources(serverId: string): Promise<McpResourceDefinition[]> {
+      const s = requireSession(sessions, serverId);
+      const { resources } = await s.client.listResources();
+      return (resources ?? []).map(resourceToDefinition);
+    },
+
+    async listResourceTemplates(serverId: string): Promise<McpResourceTemplateDefinition[]> {
+      const s = requireSession(sessions, serverId);
+      const { resourceTemplates } = await s.client.listResourceTemplates();
+      return (resourceTemplates ?? []).map(resourceTemplateToDefinition);
+    },
+
+    async readResource(input) {
+      const s = requireSession(sessions, input.serverId);
+      const result = await s.client.readResource({ uri: input.uri });
+      const era = s.client.getProtocolEra() as ProtocolEra | undefined;
+      const version = s.client.getNegotiatedProtocolVersion();
+      const contents = (result.contents ?? []).map(contentToResourceContent);
+      const evidence: ProtocolEvidence = { resultType: "complete" };
+      if (era) evidence.era = era;
+      if (version) evidence.version = version;
+      const responseMeta = (result as { _meta?: unknown })._meta;
+      if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
+      return { contents, evidence };
+    },
+
+    async listPrompts(serverId: string): Promise<McpPromptDefinition[]> {
+      const s = requireSession(sessions, serverId);
+      const { prompts } = await s.client.listPrompts();
+      return (prompts ?? []).map(promptToDefinition);
+    },
+
+    async getPrompt(input) {
+      const s = requireSession(sessions, input.serverId);
+      const result = await s.client.getPrompt({
+        name: input.name,
+        arguments: (input.arguments ?? {}) as Record<string, string>,
+      });
+      const era = s.client.getProtocolEra() as ProtocolEra | undefined;
+      const version = s.client.getNegotiatedProtocolVersion();
+      const messages: McpPromptMessage[] = (result.messages ?? []).map((m: unknown) => {
+        const mm = m as { role?: string; content?: unknown };
+        return { role: mm.role ?? "user", content: (mm.content ?? null) as JsonValue };
+      });
+      const evidence: ProtocolEvidence = { resultType: "complete" };
+      if (era) evidence.era = era;
+      if (version) evidence.version = version;
+      const responseMeta = (result as { _meta?: unknown })._meta;
+      if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
+      const out: { messages: McpPromptMessage[]; description?: string; evidence: ProtocolEvidence } = {
+        messages,
+        evidence,
+      };
+      const description = (result as { description?: unknown }).description;
+      if (typeof description === "string") out.description = description;
+      return out;
+    },
+
     async disconnect(serverId: string): Promise<void> {
       const s = sessions.get(serverId);
       if (!s) return;
@@ -200,6 +263,57 @@ function extractSupportedVersions(discover: JsonObject | undefined): string[] | 
   if (!Array.isArray(raw)) return undefined;
   const versions = raw.filter((v): v is string => typeof v === "string");
   return versions.length > 0 ? versions : undefined;
+}
+
+function resourceToDefinition(r: unknown): McpResourceDefinition {
+  const o = r as Record<string, unknown>;
+  const def: McpResourceDefinition = { uri: String(o["uri"] ?? "") };
+  if (typeof o["name"] === "string") def.name = o["name"];
+  if (typeof o["title"] === "string") def.title = o["title"];
+  if (typeof o["description"] === "string") def.description = o["description"];
+  if (typeof o["mimeType"] === "string") def.mimeType = o["mimeType"];
+  if (isJsonObject(o["annotations"])) def.annotations = o["annotations"] as Record<string, JsonValue>;
+  return def;
+}
+
+function resourceTemplateToDefinition(r: unknown): McpResourceTemplateDefinition {
+  const o = r as Record<string, unknown>;
+  const def: McpResourceTemplateDefinition = { uriTemplate: String(o["uriTemplate"] ?? "") };
+  if (typeof o["name"] === "string") def.name = o["name"];
+  if (typeof o["title"] === "string") def.title = o["title"];
+  if (typeof o["description"] === "string") def.description = o["description"];
+  if (typeof o["mimeType"] === "string") def.mimeType = o["mimeType"];
+  if (isJsonObject(o["annotations"])) def.annotations = o["annotations"] as Record<string, JsonValue>;
+  return def;
+}
+
+function contentToResourceContent(c: unknown): McpResourceContent {
+  const o = c as Record<string, unknown>;
+  const out: McpResourceContent = { uri: String(o["uri"] ?? "") };
+  if (typeof o["mimeType"] === "string") out.mimeType = o["mimeType"];
+  if (typeof o["text"] === "string") out.text = o["text"];
+  if (typeof o["blob"] === "string") out.blob = o["blob"];
+  return out;
+}
+
+function promptToDefinition(p: unknown): McpPromptDefinition {
+  const o = p as Record<string, unknown>;
+  const def: McpPromptDefinition = { name: String(o["name"] ?? "") };
+  if (typeof o["title"] === "string") def.title = o["title"];
+  if (typeof o["description"] === "string") def.description = o["description"];
+  const args = o["arguments"];
+  if (Array.isArray(args)) {
+    def.arguments = args.map((a): McpPromptDefinition["arguments"] extends (infer T)[] | undefined ? T : never => {
+      const ao = a as Record<string, unknown>;
+      const out: { name: string; description?: string; required?: boolean } = {
+        name: String(ao["name"] ?? ""),
+      };
+      if (typeof ao["description"] === "string") out.description = ao["description"];
+      if (typeof ao["required"] === "boolean") out.required = ao["required"];
+      return out as never;
+    });
+  }
+  return def;
 }
 
 function toolToDefinition(t: unknown): McpToolDefinition {

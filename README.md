@@ -51,6 +51,7 @@ apps/
 packages/
 ├── protocol/             # MCP era/version adapter
 ├── registry/             # server/capability discovery
+├── storage/              # SQLite + artifact store + repositories + event log
 ├── execution/            # multi-tool, MRTR, tasks
 ├── workspace/            # durable workspace model
 ├── renderers/            # result normalization/render selection

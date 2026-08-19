@@ -156,6 +156,259 @@ export function createServerRepository(db: SqliteDb): ServerRepository {
   }
 }
 
+// ---------- Workspaces ----------
+
+export interface Workspace {
+  id: string;
+  name: string;
+  layoutJson: Json;
+  createdAt: Iso;
+  updatedAt: Iso;
+}
+
+export interface CreateWorkspaceInput {
+  id?: string;
+  name: string;
+  layoutJson?: Json;
+}
+
+export interface UpdateWorkspaceInput {
+  name?: string;
+  layoutJson?: Json;
+}
+
+interface WorkspaceRow {
+  id: string;
+  name: string;
+  layout_json: string;
+  created_at: string;
+  updated_at: string;
+}
+
+function rowToWorkspace(row: WorkspaceRow): Workspace {
+  return {
+    id: row.id,
+    name: row.name,
+    layoutJson: row.layout_json,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export type WorkspaceNodePresentation = "collapsed" | "expanded" | "focus";
+
+export interface WorkspaceNode {
+  id: string;
+  workspaceId: string;
+  serverId: string | null;
+  capabilityId: string | null;
+  argumentsJson: Json | null;
+  presentation: WorkspaceNodePresentation;
+  position: number;
+  createdAt: Iso;
+  updatedAt: Iso;
+}
+
+export interface CreateWorkspaceNodeInput {
+  id?: string;
+  workspaceId: string;
+  serverId?: string | null;
+  capabilityId?: string | null;
+  argumentsJson?: Json | null;
+  presentation?: WorkspaceNodePresentation;
+  position?: number;
+}
+
+export interface UpdateWorkspaceNodeInput {
+  serverId?: string | null;
+  capabilityId?: string | null;
+  argumentsJson?: Json | null;
+  presentation?: WorkspaceNodePresentation;
+  position?: number;
+}
+
+interface WorkspaceNodeRow {
+  id: string;
+  workspace_id: string;
+  server_id: string | null;
+  capability_id: string | null;
+  arguments_json: string | null;
+  presentation: string;
+  position: number;
+  created_at: string;
+  updated_at: string;
+}
+
+function rowToNode(row: WorkspaceNodeRow): WorkspaceNode {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    serverId: row.server_id,
+    capabilityId: row.capability_id,
+    argumentsJson: row.arguments_json,
+    presentation: row.presentation as WorkspaceNodePresentation,
+    position: row.position,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export interface WorkspaceRepository {
+  create(input: CreateWorkspaceInput): Workspace;
+  get(id: string): Workspace | null;
+  list(): Workspace[];
+  update(id: string, patch: UpdateWorkspaceInput): Workspace;
+  delete(id: string): void;
+}
+
+export function createWorkspaceRepository(db: SqliteDb): WorkspaceRepository {
+  const insert = db.prepare(`
+    INSERT INTO workspace (id, name, layout_json, created_at, updated_at)
+    VALUES (@id, @name, @layout_json, @created_at, @updated_at)
+  `);
+  const getStmt = db.prepare("SELECT * FROM workspace WHERE id = ?");
+  const listStmt = db.prepare("SELECT * FROM workspace ORDER BY updated_at DESC");
+  const updateStmt = db.prepare(`
+    UPDATE workspace SET name = @name, layout_json = @layout_json, updated_at = @updated_at WHERE id = @id
+  `);
+  const delStmt = db.prepare("DELETE FROM workspace WHERE id = ?");
+
+  function getOrThrow(id: string): Workspace {
+    const row = getStmt.get(id) as WorkspaceRow | undefined;
+    if (!row) throw new Error(`workspace ${id} not found`);
+    return rowToWorkspace(row);
+  }
+
+  return {
+    create(input) {
+      const id = input.id ?? randomUUID();
+      const now = nowIso();
+      insert.run({
+        id,
+        name: input.name,
+        layout_json: input.layoutJson ?? "{}",
+        created_at: now,
+        updated_at: now,
+      });
+      return getOrThrow(id);
+    },
+    get(id) {
+      const row = getStmt.get(id) as WorkspaceRow | undefined;
+      return row ? rowToWorkspace(row) : null;
+    },
+    list() {
+      return (listStmt.all() as WorkspaceRow[]).map(rowToWorkspace);
+    },
+    update(id, patch) {
+      const current = getOrThrow(id);
+      const now = nowIso();
+      updateStmt.run({
+        id,
+        name: patch.name ?? current.name,
+        layout_json: patch.layoutJson ?? current.layoutJson,
+        updated_at: now,
+      });
+      return getOrThrow(id);
+    },
+    delete(id) {
+      delStmt.run(id);
+    },
+  };
+}
+
+export interface WorkspaceNodeRepository {
+  create(input: CreateWorkspaceNodeInput): WorkspaceNode;
+  get(id: string): WorkspaceNode | null;
+  listForWorkspace(workspaceId: string): WorkspaceNode[];
+  update(id: string, patch: UpdateWorkspaceNodeInput): WorkspaceNode;
+  delete(id: string): void;
+  reorder(workspaceId: string, orderedIds: string[]): WorkspaceNode[];
+}
+
+export function createWorkspaceNodeRepository(db: SqliteDb): WorkspaceNodeRepository {
+  const insert = db.prepare(`
+    INSERT INTO workspace_node
+      (id, workspace_id, server_id, capability_id, arguments_json, presentation, position, created_at, updated_at)
+    VALUES
+      (@id, @workspace_id, @server_id, @capability_id, @arguments_json, @presentation, @position, @created_at, @updated_at)
+  `);
+  const getStmt = db.prepare("SELECT * FROM workspace_node WHERE id = ?");
+  const listStmt = db.prepare(
+    "SELECT * FROM workspace_node WHERE workspace_id = ? ORDER BY position ASC, created_at ASC",
+  );
+  const updateStmt = db.prepare(`
+    UPDATE workspace_node
+    SET server_id = @server_id,
+        capability_id = @capability_id,
+        arguments_json = @arguments_json,
+        presentation = @presentation,
+        position = @position,
+        updated_at = @updated_at
+    WHERE id = @id
+  `);
+  const delStmt = db.prepare("DELETE FROM workspace_node WHERE id = ?");
+  const posStmt = db.prepare(
+    "UPDATE workspace_node SET position = ? WHERE id = ? AND workspace_id = ?",
+  );
+
+  function getOrThrow(id: string): WorkspaceNode {
+    const row = getStmt.get(id) as WorkspaceNodeRow | undefined;
+    if (!row) throw new Error(`workspace_node ${id} not found`);
+    return rowToNode(row);
+  }
+
+  return {
+    create(input) {
+      const id = input.id ?? randomUUID();
+      const now = nowIso();
+      insert.run({
+        id,
+        workspace_id: input.workspaceId,
+        server_id: input.serverId ?? null,
+        capability_id: input.capabilityId ?? null,
+        arguments_json: input.argumentsJson ?? null,
+        presentation: input.presentation ?? "collapsed",
+        position: input.position ?? 0,
+        created_at: now,
+        updated_at: now,
+      });
+      return getOrThrow(id);
+    },
+    get(id) {
+      const row = getStmt.get(id) as WorkspaceNodeRow | undefined;
+      return row ? rowToNode(row) : null;
+    },
+    listForWorkspace(workspaceId) {
+      return (listStmt.all(workspaceId) as WorkspaceNodeRow[]).map(rowToNode);
+    },
+    update(id, patch) {
+      const current = getOrThrow(id);
+      const now = nowIso();
+      updateStmt.run({
+        id,
+        server_id: patch.serverId !== undefined ? patch.serverId : current.serverId,
+        capability_id: patch.capabilityId !== undefined ? patch.capabilityId : current.capabilityId,
+        arguments_json:
+          patch.argumentsJson !== undefined ? patch.argumentsJson : current.argumentsJson,
+        presentation: patch.presentation ?? current.presentation,
+        position: patch.position ?? current.position,
+        updated_at: now,
+      });
+      return getOrThrow(id);
+    },
+    delete(id) {
+      delStmt.run(id);
+    },
+    reorder(workspaceId, orderedIds) {
+      const tx = db.transaction((ids: string[]) => {
+        ids.forEach((nodeId, idx) => posStmt.run(idx, nodeId, workspaceId));
+      });
+      tx(orderedIds);
+      return (listStmt.all(workspaceId) as WorkspaceNodeRow[]).map(rowToNode);
+    },
+  };
+}
+
 // ---------- Executions ----------
 
 export interface ExecutionRecord {

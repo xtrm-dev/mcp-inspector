@@ -10,6 +10,7 @@ import {
 import type { Storage, EventRow, UpsertServerInput } from "@mcp-inspector-x/storage";
 import type { ServerManager } from "./servers";
 import { compareExecutions } from "./compare";
+import { buildPacket, renderPacketMarkdown } from "./packets";
 
 export type { ServerBinding } from "./servers";
 
@@ -122,6 +123,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         prompts: true,
         executionHistory: true,
         executionComparison: true,
+        investigationPacketsV2: true,
       },
     }),
   );
@@ -756,6 +758,50 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       capabilityId,
       executions: deps.storage.executions.listForCapability(capabilityId, { limit }),
     });
+  });
+
+  app.post("/api/v1/packets/build", async (c) => {
+    const body = (await c.req.json().catch(() => null)) as {
+      executionIds?: unknown;
+      tier?: unknown;
+      format?: unknown;
+      packetId?: unknown;
+      context?: unknown;
+    } | null;
+    if (
+      !body ||
+      !Array.isArray(body.executionIds) ||
+      body.executionIds.length === 0 ||
+      body.executionIds.some((id) => typeof id !== "string" || id.length === 0)
+    ) {
+      return c.json({ error: "'executionIds' (non-empty string[]) required" }, 400);
+    }
+    // Bounded default: never assemble more than 50 executions in one packet unless
+    // the caller explicitly opts in. Prevents an accidental full-history export.
+    if (body.executionIds.length > 50) {
+      return c.json({ error: "packet exceeds bounded default of 50 executions" }, 400);
+    }
+    const tier =
+      body.tier === "compact" || body.tier === "investigation" || body.tier === "exhaustive"
+        ? body.tier
+        : "investigation";
+    const format = body.format === "markdown" ? "markdown" : "json";
+
+    const packetInput: Parameters<typeof buildPacket>[0] = {
+      storage: deps.storage,
+      executionIds: body.executionIds as string[],
+      tier,
+    };
+    if (typeof body.packetId === "string") packetInput.packetId = body.packetId;
+    const result = buildPacket(packetInput);
+    if ("error" in result) return c.json(result, 404);
+
+    if (format === "markdown") {
+      return c.text(renderPacketMarkdown(result), 200, {
+        "content-type": "text/markdown; charset=utf-8",
+      });
+    }
+    return c.json({ packet: result });
   });
 
   app.post("/api/v1/executions/compare", async (c) => {

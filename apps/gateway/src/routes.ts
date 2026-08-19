@@ -143,6 +143,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         runSelected: true,
         runAll: true,
         agentRuns: true,
+        traceIngestV1: true,
       },
     }),
   );
@@ -888,6 +889,51 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     if (!cs) return c.json({ error: `unknown capture_session '${id}'` }, 404);
     const runs = deps.storage.agentRuns.listForCaptureSession(id);
     return c.json({ captureSession: cs, agentRuns: runs });
+  });
+
+  // ---- Traces (Phase M slice 1: substrate + ingest, no correlation yet) ----
+
+  app.post("/api/v1/traces", async (c) => {
+    const body = (await c.req.json().catch(() => null)) as {
+      traceId?: unknown;
+      spans?: unknown;
+      source?: unknown;
+    } | null;
+    if (!body || typeof body.traceId !== "string" || body.traceId.length === 0) {
+      return c.json({ error: "'traceId' (string) required" }, 400);
+    }
+    if (!Array.isArray(body.spans)) {
+      return c.json({ error: "'spans' (array) required" }, 400);
+    }
+    // Bounded upload: a runaway agent shouldn't be able to stuff MBs of spans
+    // into a single trace record. 10k spans is generous for any realistic
+    // agent hop-chain and prevents pathological memory use.
+    if (body.spans.length > 10_000) {
+      return c.json({ error: "trace exceeds bounded default of 10,000 spans" }, 400);
+    }
+    const putInput: Parameters<typeof deps.storage.traces.put>[0] = {
+      traceId: body.traceId,
+      spans: body.spans,
+    };
+    if (typeof body.source === "string") putInput.source = body.source;
+    const record = deps.storage.traces.put(putInput);
+    deps.storage.events.append({
+      kind: "trace.ingested",
+      payload: { traceId: record.traceId, spanCount: record.spanCount, source: record.source },
+    });
+    return c.json({ trace: record }, 201);
+  });
+
+  app.get("/api/v1/traces", (c) => {
+    const limit = clampLimit(c.req.query("limit"));
+    return c.json({ traces: deps.storage.traces.list({ limit }) });
+  });
+
+  app.get("/api/v1/traces/:traceId", (c) => {
+    const traceId = c.req.param("traceId");
+    const record = deps.storage.traces.get(traceId);
+    if (!record) return c.json({ error: `unknown trace '${traceId}'` }, 404);
+    return c.json({ trace: record });
   });
 
   app.get("/api/v1/agent-runs", (c) => {

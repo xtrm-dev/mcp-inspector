@@ -1,5 +1,7 @@
 # MCP Inspector X architecture
 
+Product requirements and the complete V1 product contract are defined in [`product/PRD.md`](product/PRD.md). This document and the ADRs define architectural constraints for satisfying that product contract.
+
 ## Product boundary
 
 MCP Inspector X is an independent, general-purpose MCP inspection product. It is not coupled to Mercury services or to any one hosted platform.
@@ -29,18 +31,18 @@ OpenTelemetry Trace ──────────┘
 
 ```text
 Safe hosted plane
-  tool discovery
-  tool execution
+  capability discovery
+  remote tool/capability execution
   user-owned history
   rich results
 
 Privileged intelligence plane
-  stdio process runner
+  stdio process runner / proxy
   private source graph
   full source files
   internal traces
   deployment metadata
-  full Investigation Packet
+  privileged Investigation Packet evidence
 ```
 
 The backend enforces entitlements. Hiding a UI control is not an authorization mechanism.
@@ -61,3 +63,5 @@ The official `modelcontextprotocol/inspector` V2 is a reference and selective im
 
 - [ADR-0001 — Agent-Run MCP Trace Capture, Correlation, and Replay](adr/0001-agent-run-mcp-trace-capture-and-replay.md)
 - [ADR-0002 — Modern MCP Trace Context and Local `stdio` Capture](adr/0002-modern-mcp-trace-context-and-local-stdio-capture.md)
+
+The next comprehensive residual architecture ADR should derive from the unresolved architecture questions in [`product/PRD.md`](product/PRD.md), rather than redefining product scope.

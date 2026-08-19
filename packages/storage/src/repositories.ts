@@ -1071,6 +1071,116 @@ export function createTraceRepository(db: SqliteDb): TraceRepository {
   };
 }
 
+// ---------- Source revisions ----------
+
+export interface SourceRevision {
+  id: string;
+  repositoryRef: string;
+  revisionHash: string;
+  branch: string | null;
+  shortSha: string | null;
+  registeredAt: Iso;
+  metadata: unknown;
+}
+
+export interface RegisterSourceRevisionInput {
+  id?: string;
+  repositoryRef: string;
+  revisionHash: string;
+  branch?: string | null;
+  shortSha?: string | null;
+  metadata?: unknown;
+}
+
+interface SourceRevisionRow {
+  id: string;
+  repository_ref: string;
+  revision_hash: string;
+  branch: string | null;
+  short_sha: string | null;
+  registered_at: string;
+  metadata_json: string | null;
+}
+
+function rowToSourceRevision(row: SourceRevisionRow): SourceRevision {
+  return {
+    id: row.id,
+    repositoryRef: row.repository_ref,
+    revisionHash: row.revision_hash,
+    branch: row.branch,
+    shortSha: row.short_sha,
+    registeredAt: row.registered_at,
+    metadata: row.metadata_json ? JSON.parse(row.metadata_json) : null,
+  };
+}
+
+export interface SourceRevisionRepository {
+  register(input: RegisterSourceRevisionInput): SourceRevision;
+  get(id: string): SourceRevision | null;
+  getByHash(repositoryRef: string, revisionHash: string): SourceRevision | null;
+  listForRepository(repositoryRef: string, opts?: { limit?: number }): SourceRevision[];
+  list(opts?: { limit?: number }): SourceRevision[];
+}
+
+export function createSourceRevisionRepository(db: SqliteDb): SourceRevisionRepository {
+  const upsert = db.prepare(`
+    INSERT INTO source_revision
+      (id, repository_ref, revision_hash, branch, short_sha, registered_at, metadata_json)
+    VALUES
+      (@id, @repository_ref, @revision_hash, @branch, @short_sha, @registered_at, @metadata_json)
+    ON CONFLICT(repository_ref, revision_hash) DO UPDATE SET
+      branch     = excluded.branch,
+      short_sha  = excluded.short_sha,
+      metadata_json = excluded.metadata_json
+  `);
+  const getStmt = db.prepare("SELECT * FROM source_revision WHERE id = ?");
+  const getByHashStmt = db.prepare(
+    "SELECT * FROM source_revision WHERE repository_ref = ? AND revision_hash = ?",
+  );
+  const listRepoStmt = db.prepare(
+    "SELECT * FROM source_revision WHERE repository_ref = ? ORDER BY registered_at DESC LIMIT ?",
+  );
+  const listStmt = db.prepare(
+    "SELECT * FROM source_revision ORDER BY registered_at DESC LIMIT ?",
+  );
+
+  return {
+    register(input) {
+      const id = input.id ?? randomUUID();
+      const shortSha = input.shortSha ?? (input.revisionHash.length >= 7 ? input.revisionHash.slice(0, 7) : null);
+      upsert.run({
+        id,
+        repository_ref: input.repositoryRef,
+        revision_hash: input.revisionHash,
+        branch: input.branch ?? null,
+        short_sha: shortSha,
+        registered_at: nowIso(),
+        metadata_json: input.metadata === undefined ? null : JSON.stringify(input.metadata),
+      });
+      const row =
+        (getStmt.get(id) as SourceRevisionRow | undefined) ??
+        (getByHashStmt.get(input.repositoryRef, input.revisionHash) as SourceRevisionRow);
+      return rowToSourceRevision(row);
+    },
+    get(id) {
+      const row = getStmt.get(id) as SourceRevisionRow | undefined;
+      return row ? rowToSourceRevision(row) : null;
+    },
+    getByHash(repositoryRef, revisionHash) {
+      const row = getByHashStmt.get(repositoryRef, revisionHash) as SourceRevisionRow | undefined;
+      return row ? rowToSourceRevision(row) : null;
+    },
+    listForRepository(repositoryRef, opts) {
+      return (listRepoStmt.all(repositoryRef, opts?.limit ?? 100) as SourceRevisionRow[]).map(
+        rowToSourceRevision,
+      );
+    },
+    list(opts) {
+      return (listStmt.all(opts?.limit ?? 100) as SourceRevisionRow[]).map(rowToSourceRevision);
+    },
+  };
+}
+
 // ---------- Append-only event log + live subscription ----------
 
 export interface EventRow {

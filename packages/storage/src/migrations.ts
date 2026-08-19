@@ -193,10 +193,28 @@ CREATE TABLE trace (
 CREATE INDEX idx_trace_ingested ON trace(ingested_at DESC);
 `;
 
+// Phase M slice 2: source-intelligence substrate. Every deployed capability
+// is tied to an explicit source revision — never silently to repository main.
+// The indexer + snippet retrieval land with Phase M slice 3+.
+const V4_SOURCE_REVISION = `
+CREATE TABLE source_revision (
+  id                TEXT PRIMARY KEY,
+  repository_ref    TEXT NOT NULL,
+  revision_hash     TEXT NOT NULL,
+  branch            TEXT,
+  short_sha         TEXT,
+  registered_at     TEXT NOT NULL,
+  metadata_json     TEXT,
+  UNIQUE (repository_ref, revision_hash)
+);
+CREATE INDEX idx_source_revision_repo ON source_revision(repository_ref, registered_at DESC);
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "schema-v1", sql: V1_SCHEMA },
   { version: 2, name: "agent-run-links", sql: V2_AGENT_RUN_LINKS },
   { version: 3, name: "traces", sql: V3_TRACES },
+  { version: 4, name: "source-revision", sql: V4_SOURCE_REVISION },
 ];
 
 export function checksum(sql: string): string {

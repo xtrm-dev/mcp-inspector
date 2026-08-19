@@ -10,6 +10,7 @@ import { openStorage, type Storage } from "@mcp-inspector-x/storage";
 import { startDemoMcp, type DemoMcp } from "./demo-mcp";
 import { buildGatewayApp } from "./routes";
 import { createServerManager, type ServerManager } from "./servers";
+import { createSecretsRegistry, type SecretsRegistry } from "./secrets";
 
 describe("gateway HTTP routes (wired to the SDK adapter + demo MCP)", () => {
   let demo: DemoMcp;
@@ -17,6 +18,7 @@ describe("gateway HTTP routes (wired to the SDK adapter + demo MCP)", () => {
   let app: ReturnType<typeof buildGatewayApp>;
   let storage: Storage;
   let serverManager: ServerManager;
+  let secrets: SecretsRegistry;
   let dataDir: string;
 
   beforeAll(async () => {
@@ -24,7 +26,8 @@ describe("gateway HTTP routes (wired to the SDK adapter + demo MCP)", () => {
     storage = openStorage({ dataDir });
     demo = await startDemoMcp();
     adapter = createSdkAdapter();
-    serverManager = createServerManager({ storage, adapter });
+    secrets = createSecretsRegistry({ storage });
+    serverManager = createServerManager({ storage, adapter, secrets });
 
     const demoDef = storage.servers.upsertById({
       id: "demo",
@@ -35,7 +38,7 @@ describe("gateway HTTP routes (wired to the SDK adapter + demo MCP)", () => {
     });
     await serverManager.connect(demoDef);
 
-    app = buildGatewayApp({ adapter, storage, serverManager });
+    app = buildGatewayApp({ adapter, storage, serverManager, secrets });
   }, 15_000);
 
   afterAll(async () => {

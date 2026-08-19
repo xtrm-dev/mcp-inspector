@@ -11,6 +11,85 @@ function nowIso(): Iso {
   return new Date().toISOString();
 }
 
+// ---------- Credential references ----------
+
+export type CredentialProvider = "env" | "os" | "session";
+
+export interface CredentialRef {
+  id: string;
+  provider: CredentialProvider;
+  key: string;
+  scope: string | null;
+  createdAt: Iso;
+}
+
+export interface CreateCredentialRefInput {
+  id?: string;
+  provider: CredentialProvider;
+  key: string;
+  scope?: string | null;
+}
+
+interface CredentialRefRow {
+  id: string;
+  provider: string;
+  key: string;
+  scope: string | null;
+  created_at: string;
+}
+
+function rowToCredentialRef(row: CredentialRefRow): CredentialRef {
+  return {
+    id: row.id,
+    provider: row.provider as CredentialProvider,
+    key: row.key,
+    scope: row.scope,
+    createdAt: row.created_at,
+  };
+}
+
+export interface CredentialRefRepository {
+  create(input: CreateCredentialRefInput): CredentialRef;
+  get(id: string): CredentialRef | null;
+  list(): CredentialRef[];
+  delete(id: string): void;
+}
+
+export function createCredentialRefRepository(db: SqliteDb): CredentialRefRepository {
+  const insert = db.prepare(`
+    INSERT INTO credential_ref (id, provider, key, scope, created_at)
+    VALUES (@id, @provider, @key, @scope, @created_at)
+  `);
+  const getStmt = db.prepare("SELECT * FROM credential_ref WHERE id = ?");
+  const listStmt = db.prepare("SELECT * FROM credential_ref ORDER BY created_at ASC");
+  const delStmt = db.prepare("DELETE FROM credential_ref WHERE id = ?");
+
+  return {
+    create(input) {
+      const id = input.id ?? randomUUID();
+      const row: CredentialRefRow = {
+        id,
+        provider: input.provider,
+        key: input.key,
+        scope: input.scope ?? null,
+        created_at: nowIso(),
+      };
+      insert.run(row);
+      return rowToCredentialRef(row);
+    },
+    get(id) {
+      const row = getStmt.get(id) as CredentialRefRow | undefined;
+      return row ? rowToCredentialRef(row) : null;
+    },
+    list() {
+      return (listStmt.all() as CredentialRefRow[]).map(rowToCredentialRef);
+    },
+    delete(id) {
+      delStmt.run(id);
+    },
+  };
+}
+
 // ---------- Server definitions ----------
 
 export type Transport = "streamable-http" | "sse" | "stdio";

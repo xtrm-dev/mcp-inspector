@@ -19,6 +19,7 @@ export {
 
 export {
   createServerRepository,
+  createCredentialRefRepository,
   createWorkspaceRepository,
   createWorkspaceNodeRepository,
   createExecutionRepository,
@@ -30,6 +31,10 @@ export {
   type UpsertServerInput,
   type Transport,
   type ProtocolPolicy,
+  type CredentialRefRepository,
+  type CredentialRef,
+  type CreateCredentialRefInput,
+  type CredentialProvider,
   type WorkspaceRepository,
   type Workspace,
   type CreateWorkspaceInput,
@@ -61,6 +66,7 @@ import { openDatabase, applyMigrations, type SqliteDb } from "./database";
 import { createArtifactStore, type ArtifactStore } from "./artifacts";
 import {
   createServerRepository,
+  createCredentialRefRepository,
   createWorkspaceRepository,
   createWorkspaceNodeRepository,
   createExecutionRepository,
@@ -68,6 +74,7 @@ import {
   createEvidenceRepository,
   createEventLog,
   type ServerRepository,
+  type CredentialRefRepository,
   type WorkspaceRepository,
   type WorkspaceNodeRepository,
   type ExecutionRepository,
@@ -85,6 +92,7 @@ export interface Storage {
   db: SqliteDb;
   artifacts: ArtifactStore;
   servers: ServerRepository;
+  credentials: CredentialRefRepository;
   workspaces: WorkspaceRepository;
   workspaceNodes: WorkspaceNodeRepository;
   executions: ExecutionRepository;
@@ -106,6 +114,7 @@ export function openStorage(options: StorageOptions): Storage {
     db,
     artifacts,
     servers: createServerRepository(db),
+    credentials: createCredentialRefRepository(db),
     workspaces: createWorkspaceRepository(db),
     workspaceNodes: createWorkspaceNodeRepository(db),
     executions: createExecutionRepository(db),

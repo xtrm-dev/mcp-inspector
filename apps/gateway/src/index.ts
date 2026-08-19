@@ -9,6 +9,7 @@ import { openStorage, type Storage } from "@mcp-inspector-x/storage";
 import { startDemoMcp, type DemoMcp } from "./demo-mcp";
 import { buildGatewayApp } from "./routes";
 import { createServerManager } from "./servers";
+import { createSecretsRegistry } from "./secrets";
 
 function defaultDataDir(): string {
   return process.env["MIX_DATA_DIR"] ?? join(homedir(), ".mcp-inspector-x");
@@ -20,7 +21,8 @@ async function main(): Promise<void> {
 
   const demo: DemoMcp = await startDemoMcp();
   const adapter = createSdkAdapter();
-  const serverManager = createServerManager({ storage, adapter });
+  const secrets = createSecretsRegistry({ storage });
+  const serverManager = createServerManager({ storage, adapter, secrets });
 
   // Seed the built-in demo server into the durable catalog (idempotent by id).
   const demoDefinition = storage.servers.upsertById({
@@ -41,7 +43,7 @@ async function main(): Promise<void> {
     throw err;
   }
 
-  const app = buildGatewayApp({ adapter, storage, serverManager });
+  const app = buildGatewayApp({ adapter, storage, serverManager, secrets });
   const port = Number(process.env["PORT"] ?? 6275);
   const server = serve({ fetch: app.fetch, port }, (info) => {
     console.log(

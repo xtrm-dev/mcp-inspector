@@ -7,6 +7,7 @@ import { openStorage, type Storage } from "@mcp-inspector-x/storage";
 import { startDemoMcp, type DemoMcp } from "./demo-mcp";
 import { buildGatewayApp } from "./routes";
 import { createServerManager, type ServerManager } from "./servers";
+import { createSecretsRegistry, type SecretsRegistry } from "./secrets";
 import { diffJsonStrings } from "./compare";
 
 describe("execution history + comparison", () => {
@@ -15,6 +16,7 @@ describe("execution history + comparison", () => {
   let app: ReturnType<typeof buildGatewayApp>;
   let storage: Storage;
   let serverManager: ServerManager;
+  let secrets: SecretsRegistry;
   let dataDir: string;
 
   beforeAll(async () => {
@@ -22,7 +24,8 @@ describe("execution history + comparison", () => {
     storage = openStorage({ dataDir });
     demo = await startDemoMcp();
     adapter = createSdkAdapter();
-    serverManager = createServerManager({ storage, adapter });
+    secrets = createSecretsRegistry({ storage });
+    serverManager = createServerManager({ storage, adapter, secrets });
     const demoDef = storage.servers.upsertById({
       id: "demo",
       displayName: "Demo",
@@ -31,7 +34,7 @@ describe("execution history + comparison", () => {
       protocolPolicy: "modern",
     });
     await serverManager.connect(demoDef);
-    app = buildGatewayApp({ adapter, storage, serverManager });
+    app = buildGatewayApp({ adapter, storage, serverManager, secrets });
   }, 15_000);
 
   afterAll(async () => {

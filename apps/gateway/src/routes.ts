@@ -9,6 +9,7 @@ import {
 } from "@mcp-inspector-x/protocol";
 import type { Storage, EventRow, UpsertServerInput } from "@mcp-inspector-x/storage";
 import type { ServerManager } from "./servers";
+import type { SecretsRegistry } from "./secrets";
 import { compareExecutions } from "./compare";
 import { buildPacket, renderPacketMarkdown } from "./packets";
 
@@ -18,6 +19,7 @@ export interface GatewayDeps {
   adapter: McpClientAdapter;
   storage: Storage;
   serverManager: ServerManager;
+  secrets: SecretsRegistry;
 }
 
 // SDK adapter today supports streamable-http; stdio lands when Phase B slice 2
@@ -64,6 +66,13 @@ const UpdateNodeSchema = z.object({
 });
 const ReorderNodesSchema = z.object({
   orderedIds: z.array(z.string().min(1)).min(1),
+});
+const CredentialProviderSchema = z.enum(["env", "os", "session"]);
+const CreateCredentialSchema = z.object({
+  id: z.string().min(1).max(128).optional(),
+  provider: CredentialProviderSchema,
+  key: z.string().min(1).max(200),
+  scope: z.string().max(200).nullable().optional(),
 });
 
 const UpdateServerSchema = z.object({
@@ -124,6 +133,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         executionHistory: true,
         executionComparison: true,
         investigationPacketsV2: true,
+        credentialsV1: true,
       },
     }),
   );
@@ -760,6 +770,39 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     });
   });
 
+  // ---- /api/v1/credentials — metadata only, secret value is NEVER returned ----
+
+  app.get("/api/v1/credentials", (c) => {
+    return c.json({ credentials: deps.storage.credentials.list() });
+  });
+
+  app.post("/api/v1/credentials", async (c) => {
+    const parse = CreateCredentialSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parse.success) {
+      return c.json({ error: "invalid body", details: parse.error.issues }, 400);
+    }
+    const input: Parameters<typeof deps.storage.credentials.create>[0] = {
+      provider: parse.data.provider,
+      key: parse.data.key,
+    };
+    if (parse.data.id !== undefined) input.id = parse.data.id;
+    if (parse.data.scope !== undefined) input.scope = parse.data.scope;
+    const created = deps.storage.credentials.create(input);
+    deps.storage.events.append({
+      kind: "credential.created",
+      payload: { credentialRefId: created.id, provider: created.provider, key: created.key },
+    });
+    return c.json({ credentialRef: created }, 201);
+  });
+
+  app.delete("/api/v1/credentials/:id", (c) => {
+    const id = c.req.param("id");
+    if (!deps.storage.credentials.get(id)) return c.json({ error: `unknown credential '${id}'` }, 404);
+    deps.storage.credentials.delete(id);
+    deps.storage.events.append({ kind: "credential.deleted", payload: { credentialRefId: id } });
+    return c.json({ ok: true });
+  });
+
   app.post("/api/v1/packets/build", async (c) => {
     const body = (await c.req.json().catch(() => null)) as {
       executionIds?: unknown;
@@ -791,6 +834,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       storage: deps.storage,
       executionIds: body.executionIds as string[],
       tier,
+      knownSecrets: deps.secrets.known(),
     };
     if (typeof body.packetId === "string") packetInput.packetId = body.packetId;
     const result = buildPacket(packetInput);

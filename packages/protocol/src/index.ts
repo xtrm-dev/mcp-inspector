@@ -23,6 +23,12 @@ export interface McpServerDescriptor {
   url?: string;
   command?: string;
   protocol: ProtocolNegotiation;
+  /**
+   * Optional bearer token to send on every request. Resolved by the gateway
+   * from a CredentialRef before connect; never persisted on the descriptor
+   * itself and never surfaced back to callers.
+   */
+  bearerToken?: string;
 }
 
 export interface McpToolDefinition {

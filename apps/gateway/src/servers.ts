@@ -5,6 +5,7 @@ import {
   type ProtocolEraPolicy,
 } from "@mcp-inspector-x/protocol";
 import type { ServerDefinition, Storage } from "@mcp-inspector-x/storage";
+import type { SecretsRegistry } from "./secrets";
 
 export interface ServerBinding {
   descriptor: McpServerDescriptor;
@@ -14,6 +15,7 @@ export interface ServerBinding {
 export interface ServerManagerOptions {
   storage: Storage;
   adapter: McpClientAdapter;
+  secrets: SecretsRegistry;
 }
 
 export interface ServerManager {
@@ -35,7 +37,7 @@ export interface ConnectionTestResult {
 }
 
 export function createServerManager(options: ServerManagerOptions): ServerManager {
-  const { storage, adapter } = options;
+  const { storage, adapter, secrets } = options;
   const bindings = new Map<string, ServerBinding>();
 
   function ensureDescriptor(def: ServerDefinition): McpServerDescriptor {
@@ -51,6 +53,11 @@ export function createServerManager(options: ServerManagerOptions): ServerManage
       protocol: { policy: def.protocolPolicy as ProtocolEraPolicy },
     };
     if (def.endpoint !== null) desc.url = def.endpoint;
+    if (def.credentialRefId !== null) {
+      // Resolving here surfaces a clear pre-connect error if the credential is
+      // missing, instead of failing inside the SDK transport with a 401.
+      desc.bearerToken = secrets.resolve(def.credentialRefId);
+    }
     return desc;
   }
 

@@ -7,6 +7,7 @@ import { openStorage, type Storage } from "@mcp-inspector-x/storage";
 import { startDemoMcp, type DemoMcp } from "./demo-mcp";
 import { buildGatewayApp } from "./routes";
 import { createServerManager, type ServerManager } from "./servers";
+import { createSecretsRegistry, type SecretsRegistry } from "./secrets";
 import { buildPacket, renderPacketMarkdown } from "./packets";
 
 describe("investigation packets wired to real evidence", () => {
@@ -15,6 +16,7 @@ describe("investigation packets wired to real evidence", () => {
   let app: ReturnType<typeof buildGatewayApp>;
   let storage: Storage;
   let serverManager: ServerManager;
+  let secrets: SecretsRegistry;
   let dataDir: string;
   let executionIds: string[] = [];
 
@@ -23,7 +25,8 @@ describe("investigation packets wired to real evidence", () => {
     storage = openStorage({ dataDir });
     demo = await startDemoMcp();
     adapter = createSdkAdapter();
-    serverManager = createServerManager({ storage, adapter });
+    secrets = createSecretsRegistry({ storage });
+    serverManager = createServerManager({ storage, adapter, secrets });
     const demoDef = storage.servers.upsertById({
       id: "demo",
       displayName: "Demo",
@@ -32,7 +35,7 @@ describe("investigation packets wired to real evidence", () => {
       protocolPolicy: "modern",
     });
     await serverManager.connect(demoDef);
-    app = buildGatewayApp({ adapter, storage, serverManager });
+    app = buildGatewayApp({ adapter, storage, serverManager, secrets });
 
     // Fire a couple of real tool calls so we have real executions to packet.
     for (const args of [{ a: 1, b: 2 }, { a: 10, b: 20 }]) {

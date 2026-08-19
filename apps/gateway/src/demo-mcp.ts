@@ -82,5 +82,39 @@ function buildDemoServer(): McpServer {
       };
     },
   );
+  mcp.registerResource(
+    "readme",
+    "mix://demo/readme",
+    {
+      title: "Demo README",
+      description: "A static resource exposed by the built-in demo server",
+      mimeType: "text/markdown",
+    },
+    async (uri) => ({
+      contents: [
+        {
+          uri: uri.href,
+          mimeType: "text/markdown",
+          text: "# MCP Inspector X demo\n\nThis is a demo resource.\n",
+        },
+      ],
+    }),
+  );
+  mcp.registerPrompt(
+    "greeting",
+    {
+      title: "Greeting",
+      description: "Compose a friendly greeting for a named person.",
+      argsSchema: z.object({ name: z.string() }),
+    },
+    ({ name }) => ({
+      messages: [
+        {
+          role: "user",
+          content: { type: "text", text: `Please greet ${name} in one short sentence.` },
+        },
+      ],
+    }),
+  );
   return mcp;
 }

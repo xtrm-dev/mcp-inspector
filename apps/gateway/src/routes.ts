@@ -4,6 +4,7 @@ import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import {
   MODERN_PROTOCOL_VERSION,
+  type JsonObject,
   type McpClientAdapter,
 } from "@mcp-inspector-x/protocol";
 import type { Storage, EventRow, UpsertServerInput } from "@mcp-inspector-x/storage";
@@ -116,6 +117,8 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         resumableSse: true,
         serverCatalogCrud: true,
         persistentWorkspaces: true,
+        resources: true,
+        prompts: true,
       },
     }),
   );
@@ -280,6 +283,193 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
   });
 
   // ---- Tools + tool call (unchanged from slice 2) ----
+
+  // ---- Capability listings: tools / resources / prompts ----
+
+  app.get("/api/v1/servers/:id/resources", async (c) => {
+    const id = c.req.param("id");
+    if (!deps.serverManager.getBinding(id)) {
+      return c.json({ error: `server '${id}' not connected` }, 409);
+    }
+    try {
+      const [resources, templates] = await Promise.all([
+        deps.adapter.listResources(id),
+        deps.adapter.listResourceTemplates(id).catch(() => []),
+      ]);
+      return c.json({ resources, resourceTemplates: templates });
+    } catch (err) {
+      return c.json({ error: errMsg(err) }, 502);
+    }
+  });
+
+  app.post("/api/v1/servers/:id/resources/read", async (c) => {
+    const id = c.req.param("id");
+    if (!deps.serverManager.getBinding(id)) {
+      return c.json({ error: `server '${id}' not connected` }, 409);
+    }
+    const body = (await c.req.json().catch(() => null)) as { uri?: unknown } | null;
+    if (!body || typeof body.uri !== "string" || body.uri.length === 0) {
+      return c.json({ error: "'uri' (string) required" }, 400);
+    }
+    const capabilityId = `${id}::resource::${body.uri}`;
+    const execution = deps.storage.executions.create({ serverId: id, capabilityId });
+    deps.storage.events.append({
+      executionId: execution.id,
+      kind: "execution.created",
+      payload: { serverId: id, capabilityId, kind: "resource.read", uri: body.uri },
+    });
+    const startedAt = new Date();
+    try {
+      const { contents, evidence } = await deps.adapter.readResource({
+        serverId: id,
+        uri: body.uri,
+      });
+      const endedAt = new Date();
+      const resultJson = JSON.stringify({ contents });
+      const inlineResult = resultJson.length <= INLINE_RESULT_LIMIT ? resultJson : null;
+      let resultArtifact: string | null = null;
+      if (inlineResult === null) {
+        const rec = deps.storage.artifacts.put({
+          bytes: new TextEncoder().encode(resultJson),
+          mediaType: "application/json",
+        });
+        resultArtifact = rec.hash;
+      }
+      const evidenceBlob = deps.storage.artifacts.put({
+        bytes: new TextEncoder().encode(JSON.stringify(evidence)),
+        mediaType: "application/json",
+      });
+      const evidenceRow = deps.storage.evidence.append({
+        executionId: execution.id,
+        kind: "raw_response",
+        artifactRef: evidenceBlob.hash,
+      });
+      deps.storage.rounds.append({
+        executionId: execution.id,
+        roundIndex: 0,
+        kind: "initial",
+        argumentsJson: JSON.stringify({ uri: body.uri }),
+        resultInlineJson: inlineResult,
+        resultArtifact,
+        durationMs: endedAt.getTime() - startedAt.getTime(),
+        startedAt: startedAt.toISOString(),
+        endedAt: endedAt.toISOString(),
+      });
+      deps.storage.executions.updateStatus(execution.id, "complete", endedAt.toISOString());
+      deps.storage.events.append({
+        executionId: execution.id,
+        kind: "execution.complete",
+        payload: { serverId: id, capabilityId, evidenceRefs: [evidenceRow.id] },
+      });
+      return c.json({ executionId: execution.id, contents, evidence });
+    } catch (err) {
+      const endedAt = new Date();
+      const message = errMsg(err);
+      deps.storage.executions.updateStatus(execution.id, "failed", endedAt.toISOString());
+      deps.storage.events.append({
+        executionId: execution.id,
+        kind: "execution.failed",
+        payload: { serverId: id, capabilityId, error: message },
+      });
+      return c.json({ executionId: execution.id, error: message }, 502);
+    }
+  });
+
+  app.get("/api/v1/servers/:id/prompts", async (c) => {
+    const id = c.req.param("id");
+    if (!deps.serverManager.getBinding(id)) {
+      return c.json({ error: `server '${id}' not connected` }, 409);
+    }
+    try {
+      const prompts = await deps.adapter.listPrompts(id);
+      return c.json({ prompts });
+    } catch (err) {
+      return c.json({ error: errMsg(err) }, 502);
+    }
+  });
+
+  app.post("/api/v1/servers/:id/prompts/:name/get", async (c) => {
+    const id = c.req.param("id");
+    const name = c.req.param("name");
+    if (!deps.serverManager.getBinding(id)) {
+      return c.json({ error: `server '${id}' not connected` }, 409);
+    }
+    const body = (await c.req.json().catch(() => ({}))) as { arguments?: unknown };
+    const args =
+      body.arguments && typeof body.arguments === "object" && !Array.isArray(body.arguments)
+        ? (body.arguments as Record<string, unknown>)
+        : {};
+    const capabilityId = `${id}::prompt::${name}`;
+    const execution = deps.storage.executions.create({ serverId: id, capabilityId });
+    deps.storage.events.append({
+      executionId: execution.id,
+      kind: "execution.created",
+      payload: { serverId: id, capabilityId, kind: "prompt.get", name, arguments: args },
+    });
+    const startedAt = new Date();
+    try {
+      // Build the call args explicitly so exactOptionalPropertyTypes doesn't
+      // reject a present-but-undefined `arguments`.
+      const { messages, description, evidence } =
+        Object.keys(args).length > 0
+          ? await deps.adapter.getPrompt({ serverId: id, name, arguments: args as JsonObject })
+          : await deps.adapter.getPrompt({ serverId: id, name });
+      const endedAt = new Date();
+      const resultJson = JSON.stringify({ messages, description });
+      const inlineResult = resultJson.length <= INLINE_RESULT_LIMIT ? resultJson : null;
+      let resultArtifact: string | null = null;
+      if (inlineResult === null) {
+        const rec = deps.storage.artifacts.put({
+          bytes: new TextEncoder().encode(resultJson),
+          mediaType: "application/json",
+        });
+        resultArtifact = rec.hash;
+      }
+      const evidenceBlob = deps.storage.artifacts.put({
+        bytes: new TextEncoder().encode(JSON.stringify(evidence)),
+        mediaType: "application/json",
+      });
+      const evidenceRow = deps.storage.evidence.append({
+        executionId: execution.id,
+        kind: "raw_response",
+        artifactRef: evidenceBlob.hash,
+      });
+      deps.storage.rounds.append({
+        executionId: execution.id,
+        roundIndex: 0,
+        kind: "initial",
+        argumentsJson: JSON.stringify(args),
+        resultInlineJson: inlineResult,
+        resultArtifact,
+        durationMs: endedAt.getTime() - startedAt.getTime(),
+        startedAt: startedAt.toISOString(),
+        endedAt: endedAt.toISOString(),
+      });
+      deps.storage.executions.updateStatus(execution.id, "complete", endedAt.toISOString());
+      deps.storage.events.append({
+        executionId: execution.id,
+        kind: "execution.complete",
+        payload: { serverId: id, capabilityId, evidenceRefs: [evidenceRow.id] },
+      });
+      const response: { executionId: string; messages: unknown; description?: string; evidence: unknown } = {
+        executionId: execution.id,
+        messages,
+        evidence,
+      };
+      if (description !== undefined) response.description = description;
+      return c.json(response);
+    } catch (err) {
+      const endedAt = new Date();
+      const message = errMsg(err);
+      deps.storage.executions.updateStatus(execution.id, "failed", endedAt.toISOString());
+      deps.storage.events.append({
+        executionId: execution.id,
+        kind: "execution.failed",
+        payload: { serverId: id, capabilityId, error: message },
+      });
+      return c.json({ executionId: execution.id, error: message }, 502);
+    }
+  });
 
   app.get("/api/v1/servers/:id/tools", async (c) => {
     const id = c.req.param("id");

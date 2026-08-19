@@ -19,6 +19,8 @@ export {
 
 export {
   createServerRepository,
+  createWorkspaceRepository,
+  createWorkspaceNodeRepository,
   createExecutionRepository,
   createExecutionRoundRepository,
   createEvidenceRepository,
@@ -28,6 +30,15 @@ export {
   type UpsertServerInput,
   type Transport,
   type ProtocolPolicy,
+  type WorkspaceRepository,
+  type Workspace,
+  type CreateWorkspaceInput,
+  type UpdateWorkspaceInput,
+  type WorkspaceNodeRepository,
+  type WorkspaceNode,
+  type CreateWorkspaceNodeInput,
+  type UpdateWorkspaceNodeInput,
+  type WorkspaceNodePresentation,
   type ExecutionRepository,
   type ExecutionRecord,
   type CreateExecutionInput,
@@ -50,11 +61,15 @@ import { openDatabase, applyMigrations, type SqliteDb } from "./database";
 import { createArtifactStore, type ArtifactStore } from "./artifacts";
 import {
   createServerRepository,
+  createWorkspaceRepository,
+  createWorkspaceNodeRepository,
   createExecutionRepository,
   createExecutionRoundRepository,
   createEvidenceRepository,
   createEventLog,
   type ServerRepository,
+  type WorkspaceRepository,
+  type WorkspaceNodeRepository,
   type ExecutionRepository,
   type ExecutionRoundRepository,
   type EvidenceRepository,
@@ -70,6 +85,8 @@ export interface Storage {
   db: SqliteDb;
   artifacts: ArtifactStore;
   servers: ServerRepository;
+  workspaces: WorkspaceRepository;
+  workspaceNodes: WorkspaceNodeRepository;
   executions: ExecutionRepository;
   rounds: ExecutionRoundRepository;
   evidence: EvidenceRepository;
@@ -89,6 +106,8 @@ export function openStorage(options: StorageOptions): Storage {
     db,
     artifacts,
     servers: createServerRepository(db),
+    workspaces: createWorkspaceRepository(db),
+    workspaceNodes: createWorkspaceNodeRepository(db),
     executions: createExecutionRepository(db),
     rounds: createExecutionRoundRepository(db),
     evidence: createEvidenceRepository(db),

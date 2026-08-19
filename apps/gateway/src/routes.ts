@@ -33,6 +33,36 @@ const CreateServerSchema = z.object({
   connectNow: z.boolean().optional(),
 });
 
+const PresentationSchema = z.enum(["collapsed", "expanded", "focus"]);
+
+const CreateWorkspaceSchema = z.object({
+  id: z.string().min(1).max(128).optional(),
+  name: z.string().min(1).max(200),
+  layoutJson: z.string().optional(),
+});
+const UpdateWorkspaceSchema = z.object({
+  name: z.string().min(1).max(200).optional(),
+  layoutJson: z.string().optional(),
+});
+const CreateNodeSchema = z.object({
+  id: z.string().min(1).max(128).optional(),
+  serverId: z.string().nullable().optional(),
+  capabilityId: z.string().nullable().optional(),
+  argumentsJson: z.string().nullable().optional(),
+  presentation: PresentationSchema.optional(),
+  position: z.number().int().min(0).max(10_000).optional(),
+});
+const UpdateNodeSchema = z.object({
+  serverId: z.string().nullable().optional(),
+  capabilityId: z.string().nullable().optional(),
+  argumentsJson: z.string().nullable().optional(),
+  presentation: PresentationSchema.optional(),
+  position: z.number().int().min(0).max(10_000).optional(),
+});
+const ReorderNodesSchema = z.object({
+  orderedIds: z.array(z.string().min(1)).min(1),
+});
+
 const UpdateServerSchema = z.object({
   displayName: z.string().min(1).max(200).optional(),
   transport: TransportSchema.optional(),
@@ -85,6 +115,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         durableExecutionLog: true,
         resumableSse: true,
         serverCatalogCrud: true,
+        persistentWorkspaces: true,
       },
     }),
   );
@@ -377,6 +408,143 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       });
       return c.json({ executionId: execution.id, error: message }, 502);
     }
+  });
+
+  // ---- /api/v1/workspaces* — persistent workspace + nodes ----
+
+  app.get("/api/v1/workspaces", (c) => {
+    return c.json({ workspaces: deps.storage.workspaces.list() });
+  });
+
+  app.post("/api/v1/workspaces", async (c) => {
+    const parse = CreateWorkspaceSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parse.success) {
+      return c.json({ error: "invalid body", details: parse.error.issues }, 400);
+    }
+    const input: Parameters<typeof deps.storage.workspaces.create>[0] = {
+      name: parse.data.name,
+    };
+    if (parse.data.id !== undefined) input.id = parse.data.id;
+    if (parse.data.layoutJson !== undefined) input.layoutJson = parse.data.layoutJson;
+    const created = deps.storage.workspaces.create(input);
+    deps.storage.events.append({
+      kind: "workspace.created",
+      payload: { workspaceId: created.id },
+    });
+    return c.json({ workspace: created }, 201);
+  });
+
+  app.get("/api/v1/workspaces/:id", (c) => {
+    const id = c.req.param("id");
+    const ws = deps.storage.workspaces.get(id);
+    if (!ws) return c.json({ error: `unknown workspace '${id}'` }, 404);
+    const nodes = deps.storage.workspaceNodes.listForWorkspace(id);
+    return c.json({ workspace: ws, nodes });
+  });
+
+  app.patch("/api/v1/workspaces/:id", async (c) => {
+    const id = c.req.param("id");
+    if (!deps.storage.workspaces.get(id)) return c.json({ error: `unknown workspace '${id}'` }, 404);
+    const parse = UpdateWorkspaceSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parse.success) return c.json({ error: "invalid body", details: parse.error.issues }, 400);
+    const patch: Parameters<typeof deps.storage.workspaces.update>[1] = {};
+    if (parse.data.name !== undefined) patch.name = parse.data.name;
+    if (parse.data.layoutJson !== undefined) patch.layoutJson = parse.data.layoutJson;
+    const updated = deps.storage.workspaces.update(id, patch);
+    deps.storage.events.append({
+      kind: "workspace.updated",
+      payload: { workspaceId: id, changedKeys: Object.keys(patch) },
+    });
+    return c.json({ workspace: updated });
+  });
+
+  app.delete("/api/v1/workspaces/:id", (c) => {
+    const id = c.req.param("id");
+    if (!deps.storage.workspaces.get(id)) return c.json({ error: `unknown workspace '${id}'` }, 404);
+    deps.storage.workspaces.delete(id);
+    deps.storage.events.append({ kind: "workspace.deleted", payload: { workspaceId: id } });
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/v1/workspaces/:id/nodes", async (c) => {
+    const id = c.req.param("id");
+    if (!deps.storage.workspaces.get(id)) return c.json({ error: `unknown workspace '${id}'` }, 404);
+    const parse = CreateNodeSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parse.success) return c.json({ error: "invalid body", details: parse.error.issues }, 400);
+    const input: Parameters<typeof deps.storage.workspaceNodes.create>[0] = {
+      workspaceId: id,
+    };
+    for (const key of ["id", "serverId", "capabilityId", "argumentsJson", "presentation", "position"] as const) {
+      const val = parse.data[key];
+      if (val !== undefined) (input as unknown as Record<string, unknown>)[key] = val;
+    }
+    const node = deps.storage.workspaceNodes.create(input);
+    deps.storage.events.append({
+      kind: "workspace.node.added",
+      payload: { workspaceId: id, nodeId: node.id },
+    });
+    return c.json({ node }, 201);
+  });
+
+  app.patch("/api/v1/workspaces/:id/nodes/:nodeId", async (c) => {
+    const workspaceId = c.req.param("id");
+    const nodeId = c.req.param("nodeId");
+    const node = deps.storage.workspaceNodes.get(nodeId);
+    if (!node || node.workspaceId !== workspaceId) {
+      return c.json({ error: `unknown workspace_node '${nodeId}'` }, 404);
+    }
+    const parse = UpdateNodeSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parse.success) return c.json({ error: "invalid body", details: parse.error.issues }, 400);
+    const patch: Parameters<typeof deps.storage.workspaceNodes.update>[1] = {};
+    for (const [k, v] of Object.entries(parse.data)) {
+      if (v !== undefined) (patch as Record<string, unknown>)[k] = v;
+    }
+    const updated = deps.storage.workspaceNodes.update(nodeId, patch);
+    deps.storage.events.append({
+      kind: "workspace.node.updated",
+      payload: { workspaceId, nodeId, changedKeys: Object.keys(patch) },
+    });
+    return c.json({ node: updated });
+  });
+
+  app.delete("/api/v1/workspaces/:id/nodes/:nodeId", (c) => {
+    const workspaceId = c.req.param("id");
+    const nodeId = c.req.param("nodeId");
+    const node = deps.storage.workspaceNodes.get(nodeId);
+    if (!node || node.workspaceId !== workspaceId) {
+      return c.json({ error: `unknown workspace_node '${nodeId}'` }, 404);
+    }
+    deps.storage.workspaceNodes.delete(nodeId);
+    deps.storage.events.append({
+      kind: "workspace.node.removed",
+      payload: { workspaceId, nodeId },
+    });
+    return c.json({ ok: true });
+  });
+
+  app.post("/api/v1/workspaces/:id/nodes/reorder", async (c) => {
+    const id = c.req.param("id");
+    if (!deps.storage.workspaces.get(id)) return c.json({ error: `unknown workspace '${id}'` }, 404);
+    const parse = ReorderNodesSchema.safeParse(await c.req.json().catch(() => null));
+    if (!parse.success) return c.json({ error: "invalid body", details: parse.error.issues }, 400);
+    // Guard: every id must belong to this workspace.
+    const known = new Set(
+      deps.storage.workspaceNodes.listForWorkspace(id).map((n) => n.id),
+    );
+    for (const nodeId of parse.data.orderedIds) {
+      if (!known.has(nodeId)) {
+        return c.json(
+          { error: `node '${nodeId}' does not belong to workspace '${id}'` },
+          400,
+        );
+      }
+    }
+    const nodes = deps.storage.workspaceNodes.reorder(id, parse.data.orderedIds);
+    deps.storage.events.append({
+      kind: "workspace.node.reordered",
+      payload: { workspaceId: id, orderedIds: parse.data.orderedIds },
+    });
+    return c.json({ nodes });
   });
 
   app.get("/api/v1/executions", (c) => {

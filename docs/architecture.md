@@ -63,5 +63,6 @@ The official `modelcontextprotocol/inspector` V2 is a reference and selective im
 
 - [ADR-0001 — Agent-Run MCP Trace Capture, Correlation, and Replay](adr/0001-agent-run-mcp-trace-capture-and-replay.md)
 - [ADR-0002 — Modern MCP Trace Context and Local `stdio` Capture](adr/0002-modern-mcp-trace-context-and-local-stdio-capture.md)
+- [ADR-0003 — Complete V1 Architecture and Completion Contract](adr/0003-complete-v1-architecture-and-completion-contract.md)
 
-The next comprehensive residual architecture ADR should derive from the unresolved architecture questions in [`product/PRD.md`](product/PRD.md), rather than redefining product scope.
+ADR-0003 is the canonical complete V1 architecture derived from [`product/PRD.md`](product/PRD.md). ADR-0001 and ADR-0002 remain authoritative for their narrower Agent Run tracing and local `stdio` decisions and are incorporated by ADR-0003 rather than superseded.

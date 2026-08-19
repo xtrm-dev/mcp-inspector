@@ -1,9 +1,9 @@
 # ADR-0002 — Modern MCP Trace Context and Local `stdio` Capture
 
-**Status:** Accepted  
-**Date:** 2026-08-18  
-**Amends:** [ADR-0001 — Agent-Run MCP Trace Capture, Correlation, and Replay](./0001-agent-run-mcp-trace-capture-and-replay.md)  
-**Decision scope:** MCP Inspector X trace correlation, transport capture, local process execution, workspace replay, and diagnostic evidence  
+**Status:** Accepted<br>
+**Date:** 2026-08-18<br>
+**Amends:** [ADR-0001 — Agent-Run MCP Trace Capture, Correlation, and Replay](./0001-agent-run-mcp-trace-capture-and-replay.md)<br>
+**Decision scope:** MCP Inspector X trace correlation, transport capture, local process execution, workspace replay, and diagnostic evidence<br>
 **Protocol target:** MCP `2026-07-28` modern era, with explicit legacy compatibility where supported
 
 ## 1. Context

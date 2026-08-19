@@ -1,10 +1,10 @@
 # ADR-0003 — Complete V1 Architecture and Completion Contract
 
-**Status:** Accepted  
-**Date:** 2026-08-19  
-**Implements:** [`../product/PRD.md`](../product/PRD.md)  
-**Complements:** [ADR-0001 — Agent-Run MCP Trace Capture, Correlation, and Replay](./0001-agent-run-mcp-trace-capture-and-replay.md), [ADR-0002 — Modern MCP Trace Context and Local `stdio` Capture](./0002-modern-mcp-trace-context-and-local-stdio-capture.md)  
-**Protocol target:** MCP `2026-07-28` modern era, with explicit supported legacy compatibility  
+**Status:** Accepted<br>
+**Date:** 2026-08-19<br>
+**Implements:** [`../product/PRD.md`](../product/PRD.md)<br>
+**Complements:** [ADR-0001 — Agent-Run MCP Trace Capture, Correlation, and Replay](./0001-agent-run-mcp-trace-capture-and-replay.md), [ADR-0002 — Modern MCP Trace Context and Local `stdio` Capture](./0002-modern-mcp-trace-context-and-local-stdio-capture.md)<br>
+**Protocol target:** MCP `2026-07-28` modern era, with explicit supported legacy compatibility<br>
 **Decision scope:** complete local-first V1 system architecture, persistence, process/trust boundaries, capability/execution model, protocol evidence, auth, source/trace intelligence, Agent Runs, Investigation Packets, packaging, conformance, migration, and release completion
 
 ---

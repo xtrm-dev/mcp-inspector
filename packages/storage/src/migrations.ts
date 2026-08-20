@@ -239,6 +239,23 @@ CREATE INDEX idx_capability_source_mapping_capability
   ON capability_source_mapping(capability_id, indexed_at DESC);
 `;
 
+const V7_TRACE_CORRELATION = `
+CREATE TABLE trace_correlation (
+  trace_id                 TEXT NOT NULL,
+  subject_kind             TEXT NOT NULL,
+  subject_id               TEXT NOT NULL,
+  correlation_kind         TEXT NOT NULL,
+  correlation_confidence   REAL NOT NULL,
+  linked_at                TEXT NOT NULL,
+  PRIMARY KEY (trace_id, subject_kind, subject_id),
+  FOREIGN KEY (trace_id) REFERENCES trace(trace_id) ON DELETE CASCADE
+);
+CREATE INDEX idx_trace_correlation_subject ON trace_correlation(subject_kind, subject_id);
+
+ALTER TABLE execution ADD COLUMN trace_id TEXT;
+CREATE INDEX idx_execution_trace_id ON execution(trace_id);
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "schema-v1", sql: V1_SCHEMA },
   { version: 2, name: "agent-run-links", sql: V2_AGENT_RUN_LINKS },
@@ -246,6 +263,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 4, name: "source-revision", sql: V4_SOURCE_REVISION },
   { version: 5, name: "stdio-server-fields", sql: V5_STDIO_SERVER_FIELDS },
   { version: 6, name: "capability-source-mapping", sql: V6_CAPABILITY_SOURCE_MAPPING },
+  { version: 7, name: "trace-correlation", sql: V7_TRACE_CORRELATION },
 ];
 
 export function checksum(sql: string): string {

@@ -12,12 +12,19 @@
   },
   "negotiatedScope": {
     "description": "Client-mode conformance against MCP Inspector X's streamable-http SDK adapter. `initialize` is not applicable at 2026-07-28 (folded into request-metadata upstream). Resources/prompts/tasks/MRTR client scenarios and all OAuth scenarios are not yet implemented by apps/conformance-client at this slice — see apps/conformance-client/expected-failures.yml for the itemized baseline and .github/workflows/conformance.yml for the CI required/scoreboard split this mirrors.",
-    "required": [
-      "tools_call"
-    ]
+    "harnessRequiredForRevision": {
+      "count": 33,
+      "source": "@modelcontextprotocol/conformance@0.2.0-alpha.10/requirements/2026-07-28.yaml",
+      "note": "The harness's own canonical file lists 33 required client scenarios for 2026-07-28: tools_call, request-metadata, 25 auth/* scenarios, sep-2322-client-request-state, http-standard-headers, http-custom-headers, http-invalid-tool-headers, json-schema-ref-no-deref. Full conformance to this required set is NOT achieved by this slice; see `phasedRequiredForThisSlice` below for what this evidence file actually gates on."
+    },
+    "phasedRequiredForThisSlice": {
+      "scenarios": ["tools_call"],
+      "rationale": "This is a self-chosen phased CI gate matching the pre-existing CI required-job scope, NOT a claim of full 2026-07-28 conformance. Merging PRs #37-#46 unblocks the remaining ~32 scenarios (25 auth via #41 OAuth; request-metadata + sep-2322 via #44 MRTR + gateway routing; http-* via #38 stdio + #41 OAuth). Extend this list in the follow-up chore PR listed in PR #47's body."
+    }
   },
-  "required": {
+  "phasedRequired": {
     "scenario": "tools_call",
+    "note": "This is the ONE scenario this slice's CI gate blocks on. Full 33-scenario required set for 2026-07-28 conformance is documented under `negotiatedScope.harnessRequiredForRevision` and is NOT yet gated by CI.",
     "passed": true,
     "checks": [
       {
@@ -33,7 +40,7 @@
     ]
   },
   "informational": {
-    "description": "Full 2026-07-28 requirements sweep, no baseline applied. Non-blocking — auth/DPoP/etc. failures are expected (no OAuthProvider wired yet).",
+    "description": "Full 2026-07-28 requirements sweep, no baseline applied. Non-blocking. Of the 74 failures: ~25 are OAuth-related (blocked on PR #41 not yet merged), the remaining ~49 span request-metadata / sep-2322 / http-* / json-schema-ref-no-deref plus non-required informational scenarios — see harnessRequiredForRevision above for the required-set breakdown.",
     "summaryLine": "Total: 22 passed, 74 failed, 0 warnings",
     "totals": {
       "passed": 22,

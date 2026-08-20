@@ -162,6 +162,7 @@ export { createSdkAdapter } from "./sdk-adapter";
 export {
   createOAuthClientProvider,
   runOAuthFlow,
+  followAuthorizationRedirect,
   type OAuthPersistedState,
   type OAuthStateStore,
   type CreateOAuthClientProviderOptions,

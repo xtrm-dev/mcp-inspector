@@ -163,13 +163,33 @@ export function createOAuthClientProvider(options: CreateOAuthClientProviderOpti
  * an authorization server that redirects straight through without asking a
  * human to click anything (our mock test issuer, or a pre-consented/dev
  * issuer).
+ *
+ * SECURITY (reviewer-added, was seconder BLOCK on the initial version):
+ * The authorization server URL comes from user-added remote MCP server
+ * definitions — attacker-influenced input under this feature's threat
+ * model. Two guards on every intermediate hop:
+ *   1. Same-origin pin: every hop must stay on the authorization URL's
+ *      origin, EXCEPT the final hop which must match the loopback
+ *      `redirectUri` origin. Prevents a malicious issuer from bouncing us
+ *      to cloud metadata endpoints (169.254.169.254) or internal admin
+ *      APIs (SSRF).
+ *   2. No protocol downgrade: HTTPS → HTTP transitions are rejected
+ *      unless the HTTP target is loopback (localhost / 127.0.0.1 / ::1),
+ *      which is where the redirectUri legitimately lives.
  */
-async function followAuthorizationRedirect(
+function isLoopbackHost(host: string): boolean {
+  return host === "localhost" || host === "127.0.0.1" || host === "[::1]" || host === "::1";
+}
+
+// Exported for direct security-guard tests — see apps/gateway/src/oauth.test.ts.
+export async function followAuthorizationRedirect(
   authorizationUrl: URL,
   redirectUri: string,
   fetchFn: FetchLike,
 ): Promise<{ code: string; state: string | null; iss?: string }> {
   const target = new URL(redirectUri);
+  const authOrigin = authorizationUrl.origin;
+  const authIsHttps = authorizationUrl.protocol === "https:";
   let current: URL = authorizationUrl;
   for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
     const res = await fetchFn(current, { redirect: "manual" });
@@ -181,7 +201,26 @@ async function followAuthorizationRedirect(
       );
     }
     const next = new URL(location, current);
-    if (next.origin === target.origin && next.pathname === target.pathname) {
+    const nextIsTerminal = next.origin === target.origin && next.pathname === target.pathname;
+    // Guard 1: intermediate hops must stay on the auth-server origin.
+    // The terminating hop is the only one allowed off-origin (that's the
+    // whole point — it's our loopback redirectUri).
+    if (!nextIsTerminal && next.origin !== authOrigin) {
+      throw new Error(
+        `oauth: refusing to follow authorization redirect to '${next.origin}' — off-origin from authorization server ` +
+          `'${authOrigin}'; only the final hop to the registered redirectUri may cross origins`,
+      );
+    }
+    // Guard 2: no HTTPS→HTTP downgrade on intermediate hops. HTTP is
+    // tolerated only for loopback (matches typical registered redirectUri
+    // pattern).
+    if (authIsHttps && next.protocol !== "https:" && !isLoopbackHost(next.hostname)) {
+      throw new Error(
+        `oauth: refusing to follow authorization redirect from https to '${next.protocol}//${next.host}' — ` +
+          `protocol downgrade blocked for non-loopback targets`,
+      );
+    }
+    if (nextIsTerminal) {
       const error = next.searchParams.get("error");
       if (error) {
         const desc = next.searchParams.get("error_description");

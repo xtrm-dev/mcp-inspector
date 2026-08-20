@@ -367,3 +367,64 @@ describe("OAuth (remote MCP) — mock issuer end-to-end", () => {
     expect(mock.validAccessTokens.size).toBe(1);
   });
 });
+
+// -------------------------------------------------------------------------
+// Security guards on the manual auth-redirect chase (reviewer-added).
+// Direct-unit style — proves the guards block the exact SSRF / downgrade
+// vectors the seconder called out on the original PR.
+// -------------------------------------------------------------------------
+
+import { followAuthorizationRedirect } from "@mcp-inspector-x/protocol";
+
+const REDIRECT_URI = "http://127.0.0.1:60123/oauth/callback";
+
+function respondWithLocation(location: string): Response {
+  return new Response(null, { status: 302, headers: { location } });
+}
+
+describe("followAuthorizationRedirect — SSRF / downgrade guards", () => {
+  it("refuses to follow an intermediate redirect off the auth-server origin", async () => {
+    const authUrl = new URL("https://issuer.example.com/authorize?client_id=x");
+    // First (and only) hop tries to bounce us to cloud metadata.
+    const fakeFetch: typeof fetch = async () =>
+      respondWithLocation("http://169.254.169.254/latest/meta-data/iam");
+    await expect(followAuthorizationRedirect(authUrl, REDIRECT_URI, fakeFetch)).rejects.toThrow(
+      /off-origin from authorization server/,
+    );
+  });
+
+  it("refuses HTTPS→HTTP downgrade for the auth server (blocks via off-origin guard, since URL origin includes scheme)", async () => {
+    // Note: `https://x.com` and `http://x.com` are different WHATWG origins,
+    // so any HTTPS→HTTP transition to the same host is caught by the
+    // off-origin guard first. The dedicated downgrade guard remains as
+    // defense-in-depth in case origin semantics ever change.
+    const authUrl = new URL("https://issuer.example.com/authorize?client_id=x");
+    const fakeFetch: typeof fetch = async () =>
+      respondWithLocation("http://issuer.example.com/authorize/step2");
+    await expect(followAuthorizationRedirect(authUrl, REDIRECT_URI, fakeFetch)).rejects.toThrow(
+      /off-origin from authorization server|protocol downgrade blocked/,
+    );
+  });
+
+  it("allows HTTPS→HTTP-loopback for the terminal redirect (typical registered redirectUri)", async () => {
+    const authUrl = new URL("https://issuer.example.com/authorize?client_id=x");
+    const fakeFetch: typeof fetch = async () =>
+      respondWithLocation(`${REDIRECT_URI}?code=the-code&state=s`);
+    const out = await followAuthorizationRedirect(authUrl, REDIRECT_URI, fakeFetch);
+    expect(out.code).toBe("the-code");
+    expect(out.state).toBe("s");
+  });
+
+  it("allows same-origin HTTPS→HTTPS intermediate hops on the auth server", async () => {
+    const authUrl = new URL("https://issuer.example.com/authorize?client_id=x");
+    let hop = 0;
+    const fakeFetch: typeof fetch = async () => {
+      hop += 1;
+      if (hop === 1) return respondWithLocation("https://issuer.example.com/authorize/step2");
+      return respondWithLocation(`${REDIRECT_URI}?code=ok&state=t`);
+    };
+    const out = await followAuthorizationRedirect(authUrl, REDIRECT_URI, fakeFetch);
+    expect(out.code).toBe("ok");
+    expect(hop).toBe(2);
+  });
+});

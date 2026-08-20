@@ -26,7 +26,11 @@ import {
   type RunnerSpawnStdioMcpResult,
   type RunnerCloseStdioMcpParams,
   type RunnerCloseStdioMcpResult,
+  type RunnerKeychainGetParams,
+  type RunnerKeychainSetParams,
+  type RunnerKeychainDeleteParams,
 } from "./protocol";
+import { createOsKeychainBackend, type OsKeychainBackend } from "./os-keychain";
 
 export const RUNNER_VERSION = "0.0.0";
 
@@ -42,6 +46,8 @@ export interface RunnerServerOptions {
   socketPath: string;
   token: string;
   tokenPath?: string;
+  /** Injectable for tests. Defaults to the real platform-native backend. */
+  keychain?: OsKeychainBackend;
 }
 
 export interface RunnerServerHandle {
@@ -57,6 +63,7 @@ export interface RunnerServerHandle {
  */
 export async function startRunnerServer(options: RunnerServerOptions): Promise<RunnerServerHandle> {
   const { socketPath, token, tokenPath } = options;
+  const keychain = options.keychain ?? createOsKeychainBackend();
   mkdirSync(dirname(socketPath), { recursive: true });
   if (existsSync(socketPath)) unlinkSync(socketPath);
   if (tokenPath) {
@@ -67,7 +74,7 @@ export async function startRunnerServer(options: RunnerServerOptions): Promise<R
   const startedAt = Date.now();
   const stdioSessions = new Map<string, StdioSession>();
   const server: NetServer = createNetServer((socket) =>
-    attachConnection(socket, token, startedAt, stdioSessions),
+    attachConnection(socket, token, startedAt, stdioSessions, keychain),
   );
 
   await new Promise<void>((resolve, reject) => {
@@ -124,6 +131,7 @@ function attachConnection(
   expectedToken: string,
   startedAt: number,
   stdioSessions: Map<string, StdioSession>,
+  keychain: OsKeychainBackend,
 ): void {
   const decoder = createLineDecoder();
   let authenticated = false;
@@ -229,6 +237,49 @@ function attachConnection(
             .catch((err: unknown) => {
               respondError(id, ErrorCodes.INTERNAL_ERROR, errMsg(err));
             });
+          break;
+        }
+
+        case "runner.keychainGet": {
+          const p = (params as RunnerKeychainGetParams | undefined) ?? { service: "", account: "" };
+          if (typeof p.service !== "string" || p.service.length === 0 || typeof p.account !== "string" || p.account.length === 0) {
+            respondError(id, ErrorCodes.INVALID_PARAMS, "service and account required");
+            break;
+          }
+          keychain
+            .get(p.service, p.account)
+            .then((value) => respondOk(id, { value: value ?? null }))
+            .catch((err: unknown) => respondError(id, ErrorCodes.INTERNAL_ERROR, errMsg(err)));
+          break;
+        }
+
+        case "runner.keychainSet": {
+          const p = (params as RunnerKeychainSetParams | undefined) ?? { service: "", account: "", value: "" };
+          if (
+            typeof p.service !== "string" || p.service.length === 0 ||
+            typeof p.account !== "string" || p.account.length === 0 ||
+            typeof p.value !== "string" || p.value.length === 0
+          ) {
+            respondError(id, ErrorCodes.INVALID_PARAMS, "service, account and value required");
+            break;
+          }
+          keychain
+            .set(p.service, p.account, p.value)
+            .then(() => respondOk(id, { ok: true }))
+            .catch((err: unknown) => respondError(id, ErrorCodes.INTERNAL_ERROR, errMsg(err)));
+          break;
+        }
+
+        case "runner.keychainDelete": {
+          const p = (params as RunnerKeychainDeleteParams | undefined) ?? { service: "", account: "" };
+          if (typeof p.service !== "string" || p.service.length === 0 || typeof p.account !== "string" || p.account.length === 0) {
+            respondError(id, ErrorCodes.INVALID_PARAMS, "service and account required");
+            break;
+          }
+          keychain
+            .delete(p.service, p.account)
+            .then(() => respondOk(id, { ok: true }))
+            .catch((err: unknown) => respondError(id, ErrorCodes.INTERNAL_ERROR, errMsg(err)));
           break;
         }
 

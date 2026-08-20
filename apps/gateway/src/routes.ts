@@ -88,6 +88,10 @@ const CreateCredentialSchema = z.object({
   provider: CredentialProviderSchema,
   key: z.string().min(1).max(200),
   scope: z.string().max(200).nullable().optional(),
+  // Only meaningful for "os"/"session" — "env" always reads from the
+  // process environment. Optional: a ref can be created empty and filled
+  // in later (e.g. the OAuth flow populates it after the fact).
+  value: z.string().min(1).max(65536).optional(),
 });
 
 const UpdateServerSchema = z.object({
@@ -831,6 +835,9 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     if (!parse.success) {
       return c.json({ error: "invalid body", details: parse.error.issues }, 400);
     }
+    if (parse.data.provider === "env" && parse.data.value !== undefined) {
+      return c.json({ error: "'env' credentials cannot take a 'value' — set the environment variable instead" }, 400);
+    }
     const input: Parameters<typeof deps.storage.credentials.create>[0] = {
       provider: parse.data.provider,
       key: parse.data.key,
@@ -838,6 +845,14 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     if (parse.data.id !== undefined) input.id = parse.data.id;
     if (parse.data.scope !== undefined) input.scope = parse.data.scope;
     const created = deps.storage.credentials.create(input);
+    if (parse.data.value !== undefined) {
+      try {
+        await deps.secrets.put(created, parse.data.value);
+      } catch (err) {
+        deps.storage.credentials.delete(created.id);
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 400);
+      }
+    }
     deps.storage.events.append({
       kind: "credential.created",
       payload: { credentialRefId: created.id, provider: created.provider, key: created.key },
@@ -845,9 +860,11 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     return c.json({ credentialRef: created }, 201);
   });
 
-  app.delete("/api/v1/credentials/:id", (c) => {
+  app.delete("/api/v1/credentials/:id", async (c) => {
     const id = c.req.param("id");
-    if (!deps.storage.credentials.get(id)) return c.json({ error: `unknown credential '${id}'` }, 404);
+    const ref = deps.storage.credentials.get(id);
+    if (!ref) return c.json({ error: `unknown credential '${id}'` }, 404);
+    await deps.secrets.remove(ref).catch(() => {});
     deps.storage.credentials.delete(id);
     deps.storage.events.append({ kind: "credential.deleted", payload: { credentialRefId: id } });
     return c.json({ ok: true });

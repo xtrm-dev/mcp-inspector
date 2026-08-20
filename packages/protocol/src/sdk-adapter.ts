@@ -65,7 +65,12 @@ export function createSdkAdapter(): McpClientAdapter {
           );
         }
         const transportOpts: ConstructorParameters<typeof StreamableHTTPClientTransport>[1] = {};
-        if (descriptor.bearerToken !== undefined) {
+        if (descriptor.oauthProvider !== undefined) {
+          // Live OAuth provider: the transport adapts it internally and
+          // drives its own 401 → auth() (refresh, or a fresh authorization
+          // request) → retry-once cycle for every request on this session.
+          transportOpts.authProvider = descriptor.oauthProvider;
+        } else if (descriptor.bearerToken !== undefined) {
           const token = descriptor.bearerToken;
           transportOpts.authProvider = { token: async () => token };
         }

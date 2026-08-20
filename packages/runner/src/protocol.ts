@@ -150,12 +150,40 @@ export interface RunnerCloseStdioMcpResult {
   closed: true;
 }
 
+export interface RunnerKeychainGetParams {
+  service: string;
+  account: string;
+}
+export interface RunnerKeychainGetResult {
+  value: string | null;
+}
+
+export interface RunnerKeychainSetParams {
+  service: string;
+  account: string;
+  value: string;
+}
+export interface RunnerKeychainSetResult {
+  ok: true;
+}
+
+export interface RunnerKeychainDeleteParams {
+  service: string;
+  account: string;
+}
+export interface RunnerKeychainDeleteResult {
+  ok: true;
+}
+
 export type RunnerMethodMap = {
   "runner.authenticate": { params: RunnerAuthParams; result: RunnerAuthResult };
   "runner.ping": { params: Record<string, never>; result: RunnerPingResult };
   "runner.spawnSync": { params: RunnerSpawnSyncParams; result: RunnerSpawnSyncResult };
   "runner.spawnStdioMcp": { params: RunnerSpawnStdioMcpParams; result: RunnerSpawnStdioMcpResult };
   "runner.closeStdioMcp": { params: RunnerCloseStdioMcpParams; result: RunnerCloseStdioMcpResult };
+  "runner.keychainGet": { params: RunnerKeychainGetParams; result: RunnerKeychainGetResult };
+  "runner.keychainSet": { params: RunnerKeychainSetParams; result: RunnerKeychainSetResult };
+  "runner.keychainDelete": { params: RunnerKeychainDeleteParams; result: RunnerKeychainDeleteResult };
 };
 
 export type RunnerMethod = keyof RunnerMethodMap;

@@ -25,6 +25,13 @@ export {
   type RunnerSpawnStdioMcpResult,
   type RunnerCloseStdioMcpParams,
   type RunnerCloseStdioMcpResult,
+  type RunnerKeychainGetParams,
+  type RunnerKeychainGetResult,
+  type RunnerKeychainSetParams,
+  type RunnerKeychainSetResult,
+  type RunnerKeychainDeleteParams,
+  type RunnerKeychainDeleteResult,
   type RunnerMethod,
   type RunnerMethodMap,
 } from "./protocol";
+export { createOsKeychainBackend, type OsKeychainBackend } from "./os-keychain";

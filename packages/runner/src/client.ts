@@ -35,6 +35,15 @@ export interface RunnerClient {
   closeStdioMcp(
     params: RunnerMethodMap["runner.closeStdioMcp"]["params"],
   ): Promise<RunnerMethodMap["runner.closeStdioMcp"]["result"]>;
+  keychainGet(
+    params: RunnerMethodMap["runner.keychainGet"]["params"],
+  ): Promise<RunnerMethodMap["runner.keychainGet"]["result"]>;
+  keychainSet(
+    params: RunnerMethodMap["runner.keychainSet"]["params"],
+  ): Promise<RunnerMethodMap["runner.keychainSet"]["result"]>;
+  keychainDelete(
+    params: RunnerMethodMap["runner.keychainDelete"]["params"],
+  ): Promise<RunnerMethodMap["runner.keychainDelete"]["result"]>;
   close(): Promise<void>;
 }
 
@@ -164,6 +173,15 @@ export async function connectRunnerClient(options: RunnerClientOptions): Promise
     },
     closeStdioMcp(params) {
       return call("runner.closeStdioMcp", params);
+    },
+    keychainGet(params) {
+      return call("runner.keychainGet", params);
+    },
+    keychainSet(params) {
+      return call("runner.keychainSet", params);
+    },
+    keychainDelete(params) {
+      return call("runner.keychainDelete", params);
     },
     async close() {
       closed = true;

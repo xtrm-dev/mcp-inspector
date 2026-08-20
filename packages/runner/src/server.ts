@@ -1,7 +1,12 @@
-import { createServer as createNetServer, type Server as NetServer, type Socket } from "node:net";
-import { spawn } from "node:child_process";
+import {
+  createServer as createNetServer,
+  type Server as NetServer,
+  type Socket,
+} from "node:net";
+import { spawn, type ChildProcess } from "node:child_process";
 import { chmodSync, mkdirSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { randomBytes } from "node:crypto";
 import {
   createLineDecoder,
@@ -17,6 +22,10 @@ import {
   type RunnerAuthParams,
   type RunnerSpawnSyncParams,
   type RunnerSpawnSyncResult,
+  type RunnerSpawnStdioMcpParams,
+  type RunnerSpawnStdioMcpResult,
+  type RunnerCloseStdioMcpParams,
+  type RunnerCloseStdioMcpResult,
 } from "./protocol";
 
 export const RUNNER_VERSION = "0.0.0";
@@ -56,7 +65,10 @@ export async function startRunnerServer(options: RunnerServerOptions): Promise<R
   }
 
   const startedAt = Date.now();
-  const server: NetServer = createNetServer((socket) => attachConnection(socket, token, startedAt));
+  const stdioSessions = new Map<string, StdioSession>();
+  const server: NetServer = createNetServer((socket) =>
+    attachConnection(socket, token, startedAt, stdioSessions),
+  );
 
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -74,6 +86,13 @@ export async function startRunnerServer(options: RunnerServerOptions): Promise<R
   return {
     socketPath,
     async close() {
+      // Kill every live stdio-MCP child before tearing down the control
+      // socket, so a runner shutdown never leaks a subprocess.
+      await Promise.all(
+        Array.from(stdioSessions.keys()).map((sessionId) =>
+          closeStdioMcpSession(sessionId, stdioSessions),
+        ),
+      );
       await new Promise<void>((resolve) => {
         server.close(() => {
           if (existsSync(socketPath)) {
@@ -90,11 +109,22 @@ export async function startRunnerServer(options: RunnerServerOptions): Promise<R
   };
 }
 
+interface StdioSession {
+  child: ChildProcess;
+  pumpServer: NetServer;
+  socketPath: string;
+}
+
 export function generateAuthToken(): string {
   return randomBytes(32).toString("hex");
 }
 
-function attachConnection(socket: Socket, expectedToken: string, startedAt: number): void {
+function attachConnection(
+  socket: Socket,
+  expectedToken: string,
+  startedAt: number,
+  stdioSessions: Map<string, StdioSession>,
+): void {
   const decoder = createLineDecoder();
   let authenticated = false;
   let closed = false;
@@ -171,6 +201,34 @@ function attachConnection(socket: Socket, expectedToken: string, startedAt: numb
           runSpawnSync(p).then((result) => respondOk(id, result)).catch((err: unknown) => {
             respondError(id, ErrorCodes.INTERNAL_ERROR, errMsg(err));
           });
+          break;
+        }
+
+        case "runner.spawnStdioMcp": {
+          const p = (params as RunnerSpawnStdioMcpParams | undefined) ?? { command: "" };
+          if (typeof p.command !== "string" || p.command.length === 0) {
+            respondError(id, ErrorCodes.INVALID_PARAMS, "command required");
+            break;
+          }
+          spawnStdioMcpSession(p, stdioSessions)
+            .then((result) => respondOk(id, result))
+            .catch((err: unknown) => {
+              respondError(id, ErrorCodes.INTERNAL_ERROR, errMsg(err));
+            });
+          break;
+        }
+
+        case "runner.closeStdioMcp": {
+          const p = (params as RunnerCloseStdioMcpParams | undefined) ?? { sessionId: "" };
+          if (typeof p.sessionId !== "string" || p.sessionId.length === 0) {
+            respondError(id, ErrorCodes.INVALID_PARAMS, "sessionId required");
+            break;
+          }
+          closeStdioMcpSession(p.sessionId, stdioSessions)
+            .then((result) => respondOk(id, result))
+            .catch((err: unknown) => {
+              respondError(id, ErrorCodes.INTERNAL_ERROR, errMsg(err));
+            });
           break;
         }
 
@@ -285,6 +343,135 @@ async function runSpawnSync(params: RunnerSpawnSyncParams): Promise<RunnerSpawnS
       child.stdin.write(params.stdinInput);
       child.stdin.end();
     }
+  });
+}
+
+/**
+ * Spawn a stdio MCP child (the only place in the whole system allowed to
+ * call child_process.spawn for one — see ADR-0003) and open a fresh Unix
+ * domain socket that pumps raw bytes between it and the child's stdio:
+ * socket → child.stdin, child.stdout → socket. Framing is the caller's
+ * (the SDK adapter's) concern; the runner is just a byte pipe. Child
+ * stderr is logged to the runner's own stderr with a
+ * `[stdio:<sessionId>]` prefix.
+ */
+async function spawnStdioMcpSession(
+  params: RunnerSpawnStdioMcpParams,
+  sessions: Map<string, StdioSession>,
+): Promise<RunnerSpawnStdioMcpResult> {
+  const timeoutMs = Math.min(
+    HARD_MAX_TIMEOUT_MS,
+    Math.max(1, params.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+  );
+  const sessionId = randomBytes(12).toString("hex");
+  const socketPath = join(tmpdir(), `mix-stdio-${process.pid}-${sessionId}.sock`);
+  if (existsSync(socketPath)) unlinkSync(socketPath);
+
+  const spawnOpts: Parameters<typeof spawn>[2] = {
+    env: params.env ? { ...process.env, ...params.env } : process.env,
+    stdio: ["pipe", "pipe", "pipe"],
+  };
+  if (params.cwd !== undefined) spawnOpts.cwd = params.cwd;
+  const child = spawn(params.command, params.args ?? [], spawnOpts);
+
+  child.stderr?.on("data", (buf: Buffer) => {
+    process.stderr.write(`[stdio:${sessionId}] ${buf.toString("utf8")}`);
+  });
+
+  // Wait for the process to actually start (or fail to) before wiring up
+  // the pump socket — a bad command should surface as an error, not a
+  // socket nobody will ever connect meaningful bytes to.
+  await new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`spawnStdioMcp: '${params.command}' did not start within ${timeoutMs}ms`));
+    }, timeoutMs);
+    child.once("spawn", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    child.once("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+  });
+
+  const pumpServer: NetServer = createNetServer((socket) => {
+    socket.pipe(child.stdin!);
+    child.stdout!.pipe(socket);
+    socket.on("error", () => {
+      // The gateway went away without a clean closeStdioMcp; the session
+      // stays alive until explicitly closed (or the child exits on its own).
+    });
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    pumpServer.once("error", reject);
+    pumpServer.listen(socketPath, () => {
+      pumpServer.off("error", reject);
+      try {
+        chmodSync(socketPath, 0o600);
+      } catch {
+        // best-effort; some platforms don't honor chmod on sockets
+      }
+      resolve();
+    });
+  });
+
+  const session: StdioSession = { child, pumpServer, socketPath };
+  sessions.set(sessionId, session);
+
+  // Best-effort cleanup if the child dies on its own (crash, normal exit)
+  // without the gateway ever calling closeStdioMcp.
+  child.once("exit", () => {
+    if (sessions.get(sessionId) !== session) return;
+    sessions.delete(sessionId);
+    pumpServer.close();
+    if (existsSync(socketPath)) {
+      try {
+        unlinkSync(socketPath);
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  return { sessionId, socketPath };
+}
+
+async function closeStdioMcpSession(
+  sessionId: string,
+  sessions: Map<string, StdioSession>,
+): Promise<RunnerCloseStdioMcpResult> {
+  const session = sessions.get(sessionId);
+  if (!session) return { closed: true };
+  sessions.delete(sessionId);
+
+  await terminateChild(session.child);
+  await new Promise<void>((resolve) => session.pumpServer.close(() => resolve()));
+  if (existsSync(session.socketPath)) {
+    try {
+      unlinkSync(session.socketPath);
+    } catch {
+      // ignore
+    }
+  }
+  return { closed: true };
+}
+
+function terminateChild(child: ChildProcess): Promise<void> {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolve();
+      return;
+    }
+    const killTimer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+    }, 3_000);
+    child.once("exit", () => {
+      clearTimeout(killTimer);
+      resolve();
+    });
+    child.kill("SIGTERM");
   });
 }
 

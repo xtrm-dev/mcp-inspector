@@ -29,6 +29,12 @@ export interface RunnerClient {
   spawnSync(
     params: RunnerMethodMap["runner.spawnSync"]["params"],
   ): Promise<RunnerMethodMap["runner.spawnSync"]["result"]>;
+  spawnStdioMcp(
+    params: RunnerMethodMap["runner.spawnStdioMcp"]["params"],
+  ): Promise<RunnerMethodMap["runner.spawnStdioMcp"]["result"]>;
+  closeStdioMcp(
+    params: RunnerMethodMap["runner.closeStdioMcp"]["params"],
+  ): Promise<RunnerMethodMap["runner.closeStdioMcp"]["result"]>;
   close(): Promise<void>;
 }
 
@@ -152,6 +158,12 @@ export async function connectRunnerClient(options: RunnerClientOptions): Promise
     },
     spawnSync(params) {
       return call("runner.spawnSync", params);
+    },
+    spawnStdioMcp(params) {
+      return call("runner.spawnStdioMcp", params);
+    },
+    closeStdioMcp(params) {
+      return call("runner.closeStdioMcp", params);
     },
     async close() {
       closed = true;

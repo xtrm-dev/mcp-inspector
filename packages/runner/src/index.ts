@@ -21,6 +21,10 @@ export {
   type RunnerPingResult,
   type RunnerSpawnSyncParams,
   type RunnerSpawnSyncResult,
+  type RunnerSpawnStdioMcpParams,
+  type RunnerSpawnStdioMcpResult,
+  type RunnerCloseStdioMcpParams,
+  type RunnerCloseStdioMcpResult,
   type RunnerMethod,
   type RunnerMethodMap,
 } from "./protocol";

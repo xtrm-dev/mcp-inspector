@@ -100,6 +100,11 @@ export interface ServerDefinition {
   displayName: string;
   transport: Transport;
   endpoint: string | null;
+  // stdio-only launch parameters (null for streamable-http/sse).
+  command: string | null;
+  args: string[] | null;
+  cwd: string | null;
+  env: Record<string, string> | null;
   protocolPolicy: ProtocolPolicy;
   disabled: boolean;
   credentialRefId: string | null;
@@ -112,6 +117,10 @@ export interface UpsertServerInput {
   displayName: string;
   transport: Transport;
   endpoint?: string | null;
+  command?: string | null;
+  args?: string[] | null;
+  cwd?: string | null;
+  env?: Record<string, string> | null;
   protocolPolicy?: ProtocolPolicy;
   disabled?: boolean;
   credentialRefId?: string | null;
@@ -122,6 +131,10 @@ interface ServerRow {
   display_name: string;
   transport: string;
   endpoint: string | null;
+  command: string | null;
+  args_json: string | null;
+  cwd: string | null;
+  env_json: string | null;
   protocol_policy: string;
   disabled: number;
   credential_ref_id: string | null;
@@ -135,6 +148,10 @@ function rowToServer(row: ServerRow): ServerDefinition {
     displayName: row.display_name,
     transport: row.transport as Transport,
     endpoint: row.endpoint,
+    command: row.command,
+    args: row.args_json !== null ? (JSON.parse(row.args_json) as string[]) : null,
+    cwd: row.cwd,
+    env: row.env_json !== null ? (JSON.parse(row.env_json) as Record<string, string>) : null,
     protocolPolicy: row.protocol_policy as ProtocolPolicy,
     disabled: row.disabled === 1,
     credentialRefId: row.credential_ref_id,
@@ -155,17 +172,21 @@ export interface ServerRepository {
 export function createServerRepository(db: SqliteDb): ServerRepository {
   const insert = db.prepare(`
     INSERT INTO server_definition
-      (id, display_name, transport, endpoint, protocol_policy, disabled, credential_ref_id, created_at, updated_at)
-    VALUES (@id, @display_name, @transport, @endpoint, @protocol_policy, @disabled, @credential_ref_id, @created_at, @updated_at)
+      (id, display_name, transport, endpoint, command, args_json, cwd, env_json, protocol_policy, disabled, credential_ref_id, created_at, updated_at)
+    VALUES (@id, @display_name, @transport, @endpoint, @command, @args_json, @cwd, @env_json, @protocol_policy, @disabled, @credential_ref_id, @created_at, @updated_at)
   `);
   const upsert = db.prepare(`
     INSERT INTO server_definition
-      (id, display_name, transport, endpoint, protocol_policy, disabled, credential_ref_id, created_at, updated_at)
-    VALUES (@id, @display_name, @transport, @endpoint, @protocol_policy, @disabled, @credential_ref_id, @created_at, @updated_at)
+      (id, display_name, transport, endpoint, command, args_json, cwd, env_json, protocol_policy, disabled, credential_ref_id, created_at, updated_at)
+    VALUES (@id, @display_name, @transport, @endpoint, @command, @args_json, @cwd, @env_json, @protocol_policy, @disabled, @credential_ref_id, @created_at, @updated_at)
     ON CONFLICT(id) DO UPDATE SET
       display_name = excluded.display_name,
       transport = excluded.transport,
       endpoint = excluded.endpoint,
+      command = excluded.command,
+      args_json = excluded.args_json,
+      cwd = excluded.cwd,
+      env_json = excluded.env_json,
       protocol_policy = excluded.protocol_policy,
       disabled = excluded.disabled,
       credential_ref_id = excluded.credential_ref_id,
@@ -181,6 +202,10 @@ export function createServerRepository(db: SqliteDb): ServerRepository {
       display_name: input.displayName,
       transport: input.transport,
       endpoint: input.endpoint ?? null,
+      command: input.command ?? null,
+      args_json: input.args ? JSON.stringify(input.args) : null,
+      cwd: input.cwd ?? null,
+      env_json: input.env ? JSON.stringify(input.env) : null,
       protocol_policy: input.protocolPolicy ?? "auto",
       disabled: input.disabled ? 1 : 0,
       credential_ref_id: input.credentialRefId ?? null,
@@ -215,6 +240,10 @@ export function createServerRepository(db: SqliteDb): ServerRepository {
         displayName: patch.displayName ?? current.displayName,
         transport: patch.transport ?? current.transport,
         endpoint: patch.endpoint !== undefined ? patch.endpoint : current.endpoint,
+        command: patch.command !== undefined ? patch.command : current.command,
+        args: patch.args !== undefined ? patch.args : current.args,
+        cwd: patch.cwd !== undefined ? patch.cwd : current.cwd,
+        env: patch.env !== undefined ? patch.env : current.env,
         protocolPolicy: patch.protocolPolicy ?? current.protocolPolicy,
         disabled: patch.disabled ?? current.disabled,
         credentialRefId:

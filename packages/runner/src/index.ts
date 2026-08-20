@@ -38,3 +38,7 @@ export {
   type RunnerMethod,
   type RunnerMethodMap,
 } from "./protocol";
+export {
+  createOsKeychainBackend,
+  type OsKeychainBackend,
+} from "./os-keychain";

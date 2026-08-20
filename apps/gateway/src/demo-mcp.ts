@@ -1,9 +1,12 @@
 import { createServer, type Server as HttpServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import {
   McpServer,
   createMcpHandler,
+  inputRequired,
+  acceptedContent,
   type McpHttpHandler,
 } from "@modelcontextprotocol/server";
 import { toNodeHandler } from "@modelcontextprotocol/node";
@@ -48,6 +51,23 @@ function closeHttpServer(server: HttpServer): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
+type DemoTaskStatus = "working" | "completed" | "cancelled";
+interface DemoTask {
+  status: DemoTaskStatus;
+  pollCount: number;
+  result?: number;
+}
+const demoTasks = new Map<string, DemoTask>();
+
+function taskResult(taskId: string, status: DemoTaskStatus, result?: number) {
+  const structuredContent =
+    result === undefined ? { taskId, status } : { taskId, status, result };
+  return {
+    content: [{ type: "text" as const, text: JSON.stringify(structuredContent) }],
+    structuredContent,
+  };
+}
+
 function buildDemoServer(): McpServer {
   const mcp = new McpServer(
     { name: "mcp-inspector-x-demo", version: "0.0.1" },
@@ -80,6 +100,70 @@ function buildDemoServer(): McpServer {
         content: [{ type: "text", text: JSON.stringify({ value }) }],
         structuredContent: { value },
       };
+    },
+  );
+  mcp.registerTool(
+    "interactive_greet",
+    {
+      title: "Interactive Greet",
+      description: "Elicits a name, then greets it. Exercises the MRTR input_required round-trip.",
+      inputSchema: z.object({}),
+      outputSchema: z.object({ greeting: z.string() }),
+    },
+    (_args, ctx) => {
+      const answer = acceptedContent<{ name: string }>(ctx.mcpReq.inputResponses, "name");
+      if (typeof answer?.name !== "string" || answer.name.length === 0) {
+        return inputRequired({
+          requestState: "interactive_greet:v1",
+          inputRequests: {
+            name: inputRequired.elicit({
+              message: "What is your name?",
+              requestedSchema: z.object({ name: z.string() }),
+            }),
+          },
+        });
+      }
+      const greeting = `Hello, ${answer.name}`;
+      return {
+        content: [{ type: "text", text: greeting }],
+        structuredContent: { greeting },
+      };
+    },
+  );
+  mcp.registerTool(
+    "long_running_task",
+    {
+      title: "Long Running Task",
+      description: "Starts a task; poll or cancel it by taskId on follow-up calls.",
+      inputSchema: z.object({ taskId: z.string().optional(), cancel: z.boolean().optional() }),
+      outputSchema: z.object({
+        taskId: z.string(),
+        status: z.enum(["working", "completed", "cancelled"]),
+        result: z.number().optional(),
+      }),
+    },
+    ({ taskId, cancel }) => {
+      if (!taskId) {
+        const id = randomUUID();
+        demoTasks.set(id, { status: "working", pollCount: 0 });
+        return taskResult(id, "working");
+      }
+      const task = demoTasks.get(taskId);
+      if (!task) throw new Error(`long_running_task: unknown taskId '${taskId}'`);
+      if (cancel) {
+        task.status = "cancelled";
+        return taskResult(taskId, "cancelled");
+      }
+      if (task.status !== "working") {
+        return taskResult(taskId, task.status, task.result);
+      }
+      task.pollCount += 1;
+      if (task.pollCount >= 2) {
+        task.status = "completed";
+        task.result = 42;
+        return taskResult(taskId, "completed", 42);
+      }
+      return taskResult(taskId, "working");
     },
   );
   mcp.registerResource(

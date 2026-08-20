@@ -195,7 +195,12 @@ describe("gateway HTTP routes (wired to the SDK adapter + demo MCP)", () => {
     const tools = await (
       await app.request(`/api/v1/servers/${created.server.id}/tools`)
     ).json() as { tools: Array<{ name: string }> };
-    expect(tools.tools.map((t) => t.name).sort()).toEqual(["add_numbers", "slow_echo"]);
+    expect(tools.tools.map((t) => t.name).sort()).toEqual([
+      "add_numbers",
+      "interactive_greet",
+      "long_running_task",
+      "slow_echo",
+    ]);
 
     // Clean up.
     await app.request(`/api/v1/servers/${created.server.id}/disconnect`, { method: "POST" });

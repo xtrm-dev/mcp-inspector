@@ -11,41 +11,48 @@
 # validation) are not part of slice 7 — the adapter has no OAuthProvider
 # wired. The scoreboard job is `continue-on-error: true` so unbaselined
 # regressions there stay visible without blocking merges.
+#
+# Phase N note: the harness (0.2.0-alpha.11) requires a top-level object
+# with 'server'/'client' keys, not a bare list — `client:` wraps the same
+# entries below (fixed as part of packaging/conformance wiring; the entries
+# themselves are owned by the OAuth slice and were not reconciled against
+# the current full-sweep output here — see docs/release-v1.md).
 
-- auth/scope-step-up:step-up-authorize
-- auth/scope-step-up:step-up-refresh
-- auth/scope-step-up:step-up-reauthorize
-- auth/scope-retry-limit:retry-limit
-- auth/token-endpoint-auth-basic:basic-header
-- auth/token-endpoint-auth-basic:basic-refresh
-- auth/token-endpoint-auth-basic:basic-registration
-- auth/token-endpoint-auth-post:post-body
-- auth/token-endpoint-auth-post:post-refresh
-- auth/token-endpoint-auth-post:post-registration
-- auth/token-endpoint-auth-none:none-body
-- auth/token-endpoint-auth-none:none-refresh
-- auth/token-endpoint-auth-none:none-registration
-- auth/pre-registration:pre-registration
-- auth/offline-access-scope:offline-access-scope
-- auth/offline-access-not-supported:offline-access-not-supported
-- auth/authorization-server-migration:as-migration
-- auth/iss-supported:iss-supported
-- auth/iss-not-advertised:iss-not-advertised
-- auth/iss-supported-missing:iss-supported-missing
-- auth/iss-wrong-issuer:iss-wrong-issuer
-- auth/iss-unexpected:iss-unexpected
-- auth/iss-normalized:iss-normalized
-- auth/metadata-issuer-mismatch:metadata-issuer-mismatch
-- sep-2322-client-request-state:request-state-1
-- sep-2322-client-request-state:request-state-2
-- sep-2322-client-request-state:request-state-3
-- sep-2322-client-request-state:request-state-4
-- sep-2322-client-request-state:request-state-5
-- http-custom-headers:custom-headers-1
-- http-custom-headers:custom-headers-2
-- http-custom-headers:custom-headers-3
-- http-custom-headers:custom-headers-4
-- http-custom-headers:custom-headers-5
-- http-invalid-tool-headers:invalid-1
-- http-invalid-tool-headers:invalid-2
-- json-schema-ref-no-deref:no-deref
+client:
+  - auth/scope-step-up:step-up-authorize
+  - auth/scope-step-up:step-up-refresh
+  - auth/scope-step-up:step-up-reauthorize
+  - auth/scope-retry-limit:retry-limit
+  - auth/token-endpoint-auth-basic:basic-header
+  - auth/token-endpoint-auth-basic:basic-refresh
+  - auth/token-endpoint-auth-basic:basic-registration
+  - auth/token-endpoint-auth-post:post-body
+  - auth/token-endpoint-auth-post:post-refresh
+  - auth/token-endpoint-auth-post:post-registration
+  - auth/token-endpoint-auth-none:none-body
+  - auth/token-endpoint-auth-none:none-refresh
+  - auth/token-endpoint-auth-none:none-registration
+  - auth/pre-registration:pre-registration
+  - auth/offline-access-scope:offline-access-scope
+  - auth/offline-access-not-supported:offline-access-not-supported
+  - auth/authorization-server-migration:as-migration
+  - auth/iss-supported:iss-supported
+  - auth/iss-not-advertised:iss-not-advertised
+  - auth/iss-supported-missing:iss-supported-missing
+  - auth/iss-wrong-issuer:iss-wrong-issuer
+  - auth/iss-unexpected:iss-unexpected
+  - auth/iss-normalized:iss-normalized
+  - auth/metadata-issuer-mismatch:metadata-issuer-mismatch
+  - sep-2322-client-request-state:request-state-1
+  - sep-2322-client-request-state:request-state-2
+  - sep-2322-client-request-state:request-state-3
+  - sep-2322-client-request-state:request-state-4
+  - sep-2322-client-request-state:request-state-5
+  - http-custom-headers:custom-headers-1
+  - http-custom-headers:custom-headers-2
+  - http-custom-headers:custom-headers-3
+  - http-custom-headers:custom-headers-4
+  - http-custom-headers:custom-headers-5
+  - http-invalid-tool-headers:invalid-1
+  - http-invalid-tool-headers:invalid-2
+  - json-schema-ref-no-deref:no-deref

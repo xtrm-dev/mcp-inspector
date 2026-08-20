@@ -13,6 +13,7 @@
     "@mcp-inspector-x/investigation": "*",
     "@mcp-inspector-x/protocol": "*",
     "@mcp-inspector-x/runner": "*",
+    "@mcp-inspector-x/source-intelligence": "*",
     "@mcp-inspector-x/storage": "*",
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/node": "2.0.0",

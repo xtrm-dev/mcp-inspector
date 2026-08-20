@@ -1315,3 +1315,130 @@ export function createEventLog(db: SqliteDb): EventLog {
     },
   };
 }
+
+// ---------- Capability source mapping (Phase M slice 3) ----------
+
+export interface CapabilitySourceMapping {
+  id: string;
+  revisionId: string;
+  capabilityId: string;
+  kind: string;
+  handlerSymbol: string;
+  filePath: string;
+  lineStart: number;
+  lineEnd: number;
+  snippet: string | null;
+  indexedAt: Iso;
+}
+
+export interface IndexMappingEntryInput {
+  capabilityId: string;
+  kind: string;
+  handlerSymbol: string;
+  filePath: string;
+  lineStart: number;
+  lineEnd: number;
+  snippet?: string;
+}
+
+interface CapabilitySourceMappingRow {
+  id: string;
+  revision_id: string;
+  capability_id: string;
+  kind: string;
+  handler_symbol: string;
+  file_path: string;
+  line_start: number;
+  line_end: number;
+  snippet: string | null;
+  indexed_at: string;
+}
+
+function rowToCapabilitySourceMapping(row: CapabilitySourceMappingRow): CapabilitySourceMapping {
+  return {
+    id: row.id,
+    revisionId: row.revision_id,
+    capabilityId: row.capability_id,
+    kind: row.kind,
+    handlerSymbol: row.handler_symbol,
+    filePath: row.file_path,
+    lineStart: row.line_start,
+    lineEnd: row.line_end,
+    snippet: row.snippet,
+    indexedAt: row.indexed_at,
+  };
+}
+
+export interface SourceMappingRepository {
+  /** Upsert a batch of entries for one revision. One row per (revisionId, capabilityId). */
+  indexBatch(revisionId: string, entries: IndexMappingEntryInput[]): CapabilitySourceMapping[];
+  get(revisionId: string, capabilityId: string): CapabilitySourceMapping | null;
+  /**
+   * Most recently indexed mapping for a capability, regardless of revision.
+   * V1 has no server->revision binding yet (that's a later ADR-0003 slice),
+   * so execution sourceHint attaches the newest known mapping rather than
+   * guessing which revision actually served the call.
+   */
+  findLatestForCapability(capabilityId: string): CapabilitySourceMapping | null;
+}
+
+export function createSourceMappingRepository(db: SqliteDb): SourceMappingRepository {
+  const upsert = db.prepare(`
+    INSERT INTO capability_source_mapping
+      (id, revision_id, capability_id, kind, handler_symbol, file_path, line_start, line_end, snippet, indexed_at)
+    VALUES
+      (@id, @revision_id, @capability_id, @kind, @handler_symbol, @file_path, @line_start, @line_end, @snippet, @indexed_at)
+    ON CONFLICT(revision_id, capability_id) DO UPDATE SET
+      kind           = excluded.kind,
+      handler_symbol = excluded.handler_symbol,
+      file_path      = excluded.file_path,
+      line_start     = excluded.line_start,
+      line_end       = excluded.line_end,
+      snippet        = excluded.snippet,
+      indexed_at     = excluded.indexed_at
+  `);
+  const getStmt = db.prepare(
+    "SELECT * FROM capability_source_mapping WHERE revision_id = ? AND capability_id = ?",
+  );
+  const latestForCapabilityStmt = db.prepare(
+    "SELECT * FROM capability_source_mapping WHERE capability_id = ? ORDER BY indexed_at DESC LIMIT 1",
+  );
+
+  return {
+    indexBatch(revisionId, entries) {
+      const indexedAt = nowIso();
+      const tx = db.transaction((rows: IndexMappingEntryInput[]) => {
+        for (const entry of rows) {
+          upsert.run({
+            id: randomUUID(),
+            revision_id: revisionId,
+            capability_id: entry.capabilityId,
+            kind: entry.kind,
+            handler_symbol: entry.handlerSymbol,
+            file_path: entry.filePath,
+            line_start: entry.lineStart,
+            line_end: entry.lineEnd,
+            snippet: entry.snippet ?? null,
+            indexed_at: indexedAt,
+          });
+        }
+      });
+      tx(entries);
+      return entries.map((entry) =>
+        rowToCapabilitySourceMapping(
+          getStmt.get(revisionId, entry.capabilityId) as CapabilitySourceMappingRow,
+        ),
+      );
+    },
+    get(revisionId, capabilityId) {
+      const row = getStmt.get(revisionId, capabilityId) as CapabilitySourceMappingRow | undefined;
+      return row ? rowToCapabilitySourceMapping(row) : null;
+    },
+    findLatestForCapability(capabilityId) {
+      const row = latestForCapabilityStmt.get(capabilityId) as
+        | CapabilitySourceMappingRow
+        | undefined;
+      return row ? rowToCapabilitySourceMapping(row) : null;
+    },
+  };
+}

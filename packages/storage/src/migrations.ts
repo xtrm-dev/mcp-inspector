@@ -220,12 +220,32 @@ ALTER TABLE server_definition ADD COLUMN cwd TEXT;
 ALTER TABLE server_definition ADD COLUMN env_json TEXT;
 `;
 
+const V6_CAPABILITY_SOURCE_MAPPING = `
+CREATE TABLE capability_source_mapping (
+  id              TEXT PRIMARY KEY,
+  revision_id     TEXT NOT NULL,
+  capability_id   TEXT NOT NULL,
+  kind            TEXT NOT NULL,
+  handler_symbol  TEXT NOT NULL,
+  file_path       TEXT NOT NULL,
+  line_start      INTEGER NOT NULL,
+  line_end        INTEGER NOT NULL,
+  snippet         TEXT,
+  indexed_at      TEXT NOT NULL,
+  UNIQUE (revision_id, capability_id),
+  FOREIGN KEY (revision_id) REFERENCES source_revision(id) ON DELETE CASCADE
+);
+CREATE INDEX idx_capability_source_mapping_capability
+  ON capability_source_mapping(capability_id, indexed_at DESC);
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "schema-v1", sql: V1_SCHEMA },
   { version: 2, name: "agent-run-links", sql: V2_AGENT_RUN_LINKS },
   { version: 3, name: "traces", sql: V3_TRACES },
   { version: 4, name: "source-revision", sql: V4_SOURCE_REVISION },
   { version: 5, name: "stdio-server-fields", sql: V5_STDIO_SERVER_FIELDS },
+  { version: 6, name: "capability-source-mapping", sql: V6_CAPABILITY_SOURCE_MAPPING },
 ];
 
 export function checksum(sql: string): string {

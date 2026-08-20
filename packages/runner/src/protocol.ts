@@ -61,9 +61,13 @@ export function encode(message: JsonRpcMessage): Buffer {
  * it returns any complete messages parsed so far and buffers the trailing
  * incomplete tail. Malformed lines yield a null in the messages array so the
  * caller can respond with a PARSE_ERROR.
+ *
+ * Generic over the parsed shape so the same framing (newline-delimited
+ * JSON) can carry either a JsonRpcMessage (the default, used by the control
+ * protocol) or a CaptureEnvelope (used by the stdio-proxy ingest socket).
  */
-export function createLineDecoder(): {
-  push(chunk: Buffer): Array<JsonRpcMessage | null>;
+export function createLineDecoder<T = JsonRpcMessage>(): {
+  push(chunk: Buffer): Array<T | null>;
 } {
   let carry = "";
   return {
@@ -71,11 +75,11 @@ export function createLineDecoder(): {
       const combined = carry + chunk.toString("utf8");
       const lines = combined.split("\n");
       carry = lines.pop() ?? "";
-      const out: Array<JsonRpcMessage | null> = [];
+      const out: Array<T | null> = [];
       for (const line of lines) {
         if (line.length === 0) continue;
         try {
-          out.push(JSON.parse(line) as JsonRpcMessage);
+          out.push(JSON.parse(line) as T);
         } catch {
           out.push(null);
         }
@@ -150,12 +154,43 @@ export interface RunnerCloseStdioMcpResult {
   closed: true;
 }
 
+// ---- stdio-proxy capture ingest (Phase L slice 3) ----
+//
+// The stdio-proxy binary (spawned directly by an external agent, never by
+// the gateway/runner) taps every JSON-RPC message flowing between the
+// external agent and the real MCP child it wraps, and writes one
+// CaptureEnvelope per line to the UDS the runner hands back here. The
+// runner itself never interprets envelope contents — it just fans each
+// connection's bytes out to every other connection on the same ingest
+// socket (the gateway dials in as the other peer and persists what it
+// reads). See packages/runner/src/stdio-proxy.mjs and
+// apps/gateway/src/routes.ts.
+export type CaptureDirection = "to-target" | "to-client";
+
+export interface CaptureEnvelope {
+  direction: CaptureDirection;
+  ts: number;
+  message: JsonRpcMessage;
+}
+
+export interface RunnerAttachCaptureSessionParams {
+  label?: string;
+}
+export interface RunnerAttachCaptureSessionResult {
+  sessionId: string;
+  socketPath: string;
+}
+
 export type RunnerMethodMap = {
   "runner.authenticate": { params: RunnerAuthParams; result: RunnerAuthResult };
   "runner.ping": { params: Record<string, never>; result: RunnerPingResult };
   "runner.spawnSync": { params: RunnerSpawnSyncParams; result: RunnerSpawnSyncResult };
   "runner.spawnStdioMcp": { params: RunnerSpawnStdioMcpParams; result: RunnerSpawnStdioMcpResult };
   "runner.closeStdioMcp": { params: RunnerCloseStdioMcpParams; result: RunnerCloseStdioMcpResult };
+  "runner.attachCaptureSession": {
+    params: RunnerAttachCaptureSessionParams;
+    result: RunnerAttachCaptureSessionResult;
+  };
 };
 
 export type RunnerMethod = keyof RunnerMethodMap;

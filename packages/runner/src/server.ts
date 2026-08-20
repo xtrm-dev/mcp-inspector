@@ -26,6 +26,8 @@ import {
   type RunnerSpawnStdioMcpResult,
   type RunnerCloseStdioMcpParams,
   type RunnerCloseStdioMcpResult,
+  type RunnerAttachCaptureSessionParams,
+  type RunnerAttachCaptureSessionResult,
 } from "./protocol";
 
 export const RUNNER_VERSION = "0.0.0";
@@ -66,8 +68,9 @@ export async function startRunnerServer(options: RunnerServerOptions): Promise<R
 
   const startedAt = Date.now();
   const stdioSessions = new Map<string, StdioSession>();
+  const captureIngestSessions = new Map<string, CaptureIngestSession>();
   const server: NetServer = createNetServer((socket) =>
-    attachConnection(socket, token, startedAt, stdioSessions),
+    attachConnection(socket, token, startedAt, stdioSessions, captureIngestSessions),
   );
 
   await new Promise<void>((resolve, reject) => {
@@ -93,6 +96,10 @@ export async function startRunnerServer(options: RunnerServerOptions): Promise<R
           closeStdioMcpSession(sessionId, stdioSessions),
         ),
       );
+      await Promise.all(
+        Array.from(captureIngestSessions.values()).map((session) => closeCaptureIngestSession(session)),
+      );
+      captureIngestSessions.clear();
       await new Promise<void>((resolve) => {
         server.close(() => {
           if (existsSync(socketPath)) {
@@ -115,6 +122,17 @@ interface StdioSession {
   socketPath: string;
 }
 
+// A capture-ingest session is a plain N-way byte tee: the stdio-proxy
+// binary dials in as one peer and writes CaptureEnvelope lines; the
+// gateway dials in as another peer to read them. The runner never parses
+// envelope contents — it just relays each connection's bytes to every
+// other connection on the same socket (see protocol.ts CaptureEnvelope).
+interface CaptureIngestSession {
+  server: NetServer;
+  socketPath: string;
+  peers: Set<Socket>;
+}
+
 export function generateAuthToken(): string {
   return randomBytes(32).toString("hex");
 }
@@ -124,6 +142,7 @@ function attachConnection(
   expectedToken: string,
   startedAt: number,
   stdioSessions: Map<string, StdioSession>,
+  captureIngestSessions: Map<string, CaptureIngestSession>,
 ): void {
   const decoder = createLineDecoder();
   let authenticated = false;
@@ -211,6 +230,16 @@ function attachConnection(
             break;
           }
           spawnStdioMcpSession(p, stdioSessions)
+            .then((result) => respondOk(id, result))
+            .catch((err: unknown) => {
+              respondError(id, ErrorCodes.INTERNAL_ERROR, errMsg(err));
+            });
+          break;
+        }
+
+        case "runner.attachCaptureSession": {
+          const p = (params as RunnerAttachCaptureSessionParams | undefined) ?? {};
+          attachCaptureSessionHandler(p, captureIngestSessions)
             .then((result) => respondOk(id, result))
             .catch((err: unknown) => {
               respondError(id, ErrorCodes.INTERNAL_ERROR, errMsg(err));
@@ -436,6 +465,67 @@ async function spawnStdioMcpSession(
   });
 
   return { sessionId, socketPath };
+}
+
+/**
+ * Open a fresh capture-ingest UDS: a plain byte tee that fans each
+ * connected peer's bytes out to every other peer. The stdio-proxy binary
+ * connects as one peer (writer); the gateway connects as another (reader)
+ * before ever handing the socket path to a proxy invocation, so the
+ * reader is always attached before the proxy's first byte. Single-client
+ * per session by design (see bead NON_GOALS — no multiplexing).
+ */
+async function attachCaptureSessionHandler(
+  _params: RunnerAttachCaptureSessionParams,
+  sessions: Map<string, CaptureIngestSession>,
+): Promise<RunnerAttachCaptureSessionResult> {
+  const sessionId = randomBytes(12).toString("hex");
+  const socketPath = join(tmpdir(), `mix-capture-${process.pid}-${sessionId}.sock`);
+  if (existsSync(socketPath)) unlinkSync(socketPath);
+
+  const peers = new Set<Socket>();
+  const server: NetServer = createNetServer((socket) => {
+    peers.add(socket);
+    socket.on("data", (chunk) => {
+      for (const peer of peers) {
+        if (peer !== socket && !peer.destroyed) peer.write(chunk);
+      }
+    });
+    const drop = () => peers.delete(socket);
+    socket.on("close", drop);
+    socket.on("error", drop);
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, () => {
+      server.off("error", reject);
+      try {
+        chmodSync(socketPath, 0o600);
+      } catch {
+        // best-effort; some platforms don't honor chmod on sockets
+      }
+      resolve();
+    });
+  });
+
+  sessions.set(sessionId, { server, socketPath, peers });
+  return { sessionId, socketPath };
+}
+
+async function closeCaptureIngestSession(session: CaptureIngestSession): Promise<void> {
+  for (const peer of session.peers) {
+    peer.destroy();
+  }
+  session.peers.clear();
+  await new Promise<void>((resolve) => session.server.close(() => resolve()));
+  if (existsSync(session.socketPath)) {
+    try {
+      unlinkSync(session.socketPath);
+    } catch {
+      // ignore
+    }
+  }
 }
 
 async function closeStdioMcpSession(

@@ -16,6 +16,12 @@ export {
 } from "./client";
 export {
   ErrorCodes,
+  isRequest,
+  isNotification,
+  isResponse,
+  createLineDecoder,
+  type JsonRpcMessage,
+  type JsonRpcRequest,
   type RunnerAuthParams,
   type RunnerAuthResult,
   type RunnerPingResult,
@@ -25,6 +31,10 @@ export {
   type RunnerSpawnStdioMcpResult,
   type RunnerCloseStdioMcpParams,
   type RunnerCloseStdioMcpResult,
+  type RunnerAttachCaptureSessionParams,
+  type RunnerAttachCaptureSessionResult,
+  type CaptureDirection,
+  type CaptureEnvelope,
   type RunnerMethod,
   type RunnerMethodMap,
 } from "./protocol";

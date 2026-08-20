@@ -1,12 +1,27 @@
 import {
+  createOAuthClientProvider,
+  runOAuthFlow,
   type McpClientAdapter,
   type McpServerDescriptor,
+  type OAuthPersistedState,
+  type OAuthStateStore,
   type ProtocolNegotiation,
   type ProtocolEraPolicy,
 } from "@mcp-inspector-x/protocol";
 import type { RunnerClient, RunnerSpawnStdioMcpParams } from "@mcp-inspector-x/runner";
-import type { ServerDefinition, Storage } from "@mcp-inspector-x/storage";
+import type { CredentialRef, ServerDefinition, Storage } from "@mcp-inspector-x/storage";
 import type { SecretsRegistry } from "./secrets";
+
+// Convention (not a schema column — see Phase I slice 2 bead): a
+// non-"env" CredentialRef whose key is exactly this sentinel holds an OAuth
+// `OAuthPersistedState` JSON blob rather than a raw bearer-token string.
+// Reserved namespace; user-chosen keys for plain bearer secrets should
+// never collide with it in practice (they look like env-var names).
+const OAUTH_CREDENTIAL_KEY = "oauth";
+
+function isOAuthCredentialRef(ref: CredentialRef): boolean {
+  return ref.provider !== "env" && ref.key === OAUTH_CREDENTIAL_KEY;
+}
 
 export interface ServerBinding {
   descriptor: McpServerDescriptor;
@@ -48,7 +63,33 @@ export function createServerManager(options: ServerManagerOptions): ServerManage
   const { storage, adapter, secrets, runnerClient } = options;
   const bindings = new Map<string, ServerBinding>();
 
-  function ensureDescriptor(def: ServerDefinition): McpServerDescriptor {
+  // Backs an OAuth-managed CredentialRef's persisted state (client
+  // registration, tokens, discovery state) through the SecretsRegistry, so
+  // the raw tokens only ever live behind the same CredentialRef +
+  // redaction path a static bearer token does — never in the
+  // ServerDefinition, evidence, history, or a packet.
+  async function buildOAuthStore(ref: CredentialRef): Promise<OAuthStateStore> {
+    let cached: OAuthPersistedState | undefined;
+    try {
+      cached = JSON.parse(await secrets.resolve(ref.id)) as OAuthPersistedState;
+    } catch {
+      // No value stored yet (brand-new OAuth ref) — start from empty state.
+      cached = undefined;
+    }
+    return {
+      load: () => cached,
+      async save(state) {
+        if (state.tokens?.access_token) secrets.noteSecret(state.tokens.access_token);
+        if (state.tokens?.refresh_token) secrets.noteSecret(state.tokens.refresh_token);
+        const clientSecret = (state.clientInformation as { client_secret?: string } | undefined)?.client_secret;
+        if (clientSecret) secrets.noteSecret(clientSecret);
+        await secrets.put(ref, JSON.stringify(state));
+        cached = state;
+      },
+    };
+  }
+
+  async function ensureDescriptor(def: ServerDefinition): Promise<McpServerDescriptor> {
     if (def.transport !== "streamable-http" && def.transport !== "stdio") {
       throw new Error(
         `server '${def.id}': transport '${def.transport}' not supported by the current SDK adapter`,
@@ -66,9 +107,43 @@ export function createServerManager(options: ServerManagerOptions): ServerManage
     if (def.endpoint !== null) desc.url = def.endpoint;
     if (def.command !== null) desc.command = def.command;
     if (def.credentialRefId !== null) {
-      // Resolving here surfaces a clear pre-connect error if the credential is
-      // missing, instead of failing inside the SDK transport with a 401.
-      desc.bearerToken = secrets.resolve(def.credentialRefId);
+      const ref = storage.credentials.get(def.credentialRefId);
+      if (!ref) {
+        throw new Error(`server '${def.id}': credential ref '${def.credentialRefId}' not found`);
+      }
+      if (isOAuthCredentialRef(ref)) {
+        if (def.transport !== "streamable-http" || !def.endpoint) {
+          throw new Error(`server '${def.id}': OAuth credential requires streamable-http transport with an endpoint`);
+        }
+        const store = await buildOAuthStore(ref);
+        const provider = createOAuthClientProvider({
+          serverUrl: def.endpoint,
+          // Chosen by us, never actually listened on — see
+          // packages/protocol/src/oauth.ts module docs (no interactive
+          // browser consent in this slice; the authorization endpoint's
+          // redirect chain is followed by hand instead).
+          redirectUrl: `http://127.0.0.1:33418/oauth/callback/${def.id}`,
+          store,
+        });
+        // Triggered here, proactively, rather than waiting for the SDK
+        // transport to react to a real 401: with no cached tokens the
+        // first request would 401 anyway, and the SDK's own
+        // onUnauthorized→auth() retry can't complete an interactive
+        // authorization-code redirect in one round trip (see oauth.ts).
+        // Once tokens exist, silent refresh on expiry is handled entirely
+        // by the SDK transport — no extra code needed here for that case.
+        if (!(await provider.tokens())) {
+          const result = await runOAuthFlow({ serverUrl: def.endpoint, provider });
+          if (result !== "AUTHORIZED") {
+            throw new Error(`server '${def.id}': OAuth authorization did not complete (result: ${result})`);
+          }
+        }
+        desc.oauthProvider = provider;
+      } else {
+        // Resolving here surfaces a clear pre-connect error if the credential is
+        // missing, instead of failing inside the SDK transport with a 401.
+        desc.bearerToken = await secrets.resolve(def.credentialRefId);
+      }
     }
     return desc;
   }
@@ -80,7 +155,7 @@ export function createServerManager(options: ServerManagerOptions): ServerManage
     if (definition.disabled) {
       throw new Error(`server '${definition.id}' is disabled`);
     }
-    const descriptor = ensureDescriptor(definition);
+    const descriptor = await ensureDescriptor(definition);
 
     // Stdio MCP is spawned by the privileged runner, never here (ADR-0003).
     // The runner hands back a UDS the SDK adapter speaks line-delimited

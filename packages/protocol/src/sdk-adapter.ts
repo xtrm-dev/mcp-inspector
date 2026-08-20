@@ -65,7 +65,11 @@ export function createSdkAdapter(): McpClientAdapter {
           );
         }
         const transportOpts: ConstructorParameters<typeof StreamableHTTPClientTransport>[1] = {};
-        if (descriptor.bearerToken !== undefined) {
+        if (descriptor.oauthProvider !== undefined) {
+          // SDK drives its own 401→refresh retry through this authProvider
+          // for the lifetime of the connection.
+          transportOpts.authProvider = descriptor.oauthProvider;
+        } else if (descriptor.bearerToken !== undefined) {
           const token = descriptor.bearerToken;
           transportOpts.authProvider = { token: async () => token };
         }

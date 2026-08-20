@@ -1,3 +1,5 @@
+import type { OAuthClientProvider } from "@modelcontextprotocol/client";
+
 export const MODERN_PROTOCOL_VERSION = "2026-07-28" as const;
 
 export type ProtocolEra = "modern" | "legacy";
@@ -35,6 +37,15 @@ export interface McpServerDescriptor {
    * itself and never surfaced back to callers.
    */
   bearerToken?: string;
+  /**
+   * Live OAuth client provider (see ./oauth.ts) for a streamable-http
+   * server whose auth is OAuth-managed rather than a static bearer token.
+   * Set instead of `bearerToken`, never both. The adapter passes it
+   * straight through to the SDK transport's `authProvider` option, which
+   * drives the SDK's own 401→refresh retry for the lifetime of the
+   * connection.
+   */
+  oauthProvider?: OAuthClientProvider;
 }
 
 export interface McpToolDefinition {
@@ -161,3 +172,11 @@ export const protocolAdapterContractVersion = 3 as const;
 export const TASKS_EXTENSION_KEY = "io.modelcontextprotocol/tasks" as const;
 
 export { createSdkAdapter } from "./sdk-adapter";
+export {
+  createOAuthClientProvider,
+  runOAuthFlow,
+  followAuthorizationRedirect,
+  type OAuthPersistedState,
+  type OAuthStateStore,
+  type CreateOAuthClientProviderOptions,
+} from "./oauth";

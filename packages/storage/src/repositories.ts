@@ -546,6 +546,7 @@ export interface CreateExecutionInput {
   capabilityId: string;
   status?: string;
   traceId?: string | null;
+  metadata?: unknown;
 }
 
 interface ExecutionRow {
@@ -560,9 +561,16 @@ interface ExecutionRow {
   status: string;
   started_at: string;
   ended_at: string | null;
+  metadata_json: string | null;
 }
 
 function rowToExecution(row: ExecutionRow): ExecutionRecord {
+  const traceMeta = row.trace_id ? { traceId: row.trace_id } : null;
+  const extra = row.metadata_json ? (JSON.parse(row.metadata_json) as Record<string, unknown>) : null;
+  let metadata: unknown = null;
+  if (traceMeta && extra) metadata = { ...extra, ...traceMeta };
+  else if (traceMeta) metadata = traceMeta;
+  else if (extra) metadata = extra;
   return {
     id: row.id,
     workspaceId: row.workspace_id,
@@ -574,7 +582,7 @@ function rowToExecution(row: ExecutionRow): ExecutionRecord {
     status: row.status,
     startedAt: row.started_at,
     endedAt: row.ended_at,
-    metadata: row.trace_id ? { traceId: row.trace_id } : null,
+    metadata,
   };
 }
 
@@ -593,9 +601,9 @@ export function createExecutionRepository(db: SqliteDb): ExecutionRepository {
   const insert = db.prepare(`
     INSERT INTO execution
       (id, workspace_id, workspace_node_id, capture_session_id, agent_run_id, trace_id,
-       server_id, capability_id, status, started_at, ended_at)
+       server_id, capability_id, status, started_at, ended_at, metadata_json)
     VALUES (@id, @workspace_id, @workspace_node_id, @capture_session_id, @agent_run_id, @trace_id,
-            @server_id, @capability_id, @status, @started_at, @ended_at)
+            @server_id, @capability_id, @status, @started_at, @ended_at, @metadata_json)
   `);
   const getStmt = db.prepare("SELECT * FROM execution WHERE id = ?");
   const listStmt = db.prepare("SELECT * FROM execution ORDER BY started_at DESC LIMIT ?");
@@ -630,6 +638,7 @@ export function createExecutionRepository(db: SqliteDb): ExecutionRepository {
         status: input.status ?? "queued",
         started_at: nowIso(),
         ended_at: null as string | null,
+        metadata_json: input.metadata !== undefined ? JSON.stringify(input.metadata) : null,
       };
       insert.run(row);
       return rowToExecution(row as ExecutionRow);

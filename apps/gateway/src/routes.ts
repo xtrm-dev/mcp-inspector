@@ -8,6 +8,7 @@ import {
   type McpClientAdapter,
 } from "@mcp-inspector-x/protocol";
 import type { Storage, EventRow, UpsertServerInput } from "@mcp-inspector-x/storage";
+import { createRendererRegistry } from "@mcp-inspector-x/renderers";
 import type { ServerManager } from "./servers";
 import type { SecretsRegistry } from "./secrets";
 import { compareExecutions } from "./compare";
@@ -94,6 +95,8 @@ const UpdateServerSchema = z.object({
  * Build the Hono app. Split from index.ts so routes can be exercised in
  * unit tests without spinning a real Node HTTP listener.
  */
+const rendererRegistry = createRendererRegistry();
+
 export function buildGatewayApp(deps: GatewayDeps): Hono {
   const app = new Hono();
 
@@ -148,6 +151,10 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       },
     }),
   );
+
+  app.get("/api/v1/renderers", (c) => {
+    return c.json({ renderers: rendererRegistry.available().map((kind) => rendererRegistry.describe(kind)) });
+  });
 
   // ---- /api/v1/servers* — real catalog CRUD ----
 
@@ -387,7 +394,12 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         kind: "execution.complete",
         payload: { serverId: id, capabilityId, evidenceRefs: [evidenceRow.id] },
       });
-      return c.json({ executionId: execution.id, contents, evidence });
+      return c.json({
+        executionId: execution.id,
+        contents,
+        evidence,
+        suggestedRenderer: rendererRegistry.suggest(contents),
+      });
     } catch (err) {
       const endedAt = new Date();
       const message = errMsg(err);
@@ -477,10 +489,17 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         kind: "execution.complete",
         payload: { serverId: id, capabilityId, evidenceRefs: [evidenceRow.id] },
       });
-      const response: { executionId: string; messages: unknown; description?: string; evidence: unknown } = {
+      const response: {
+        executionId: string;
+        messages: unknown;
+        description?: string;
+        evidence: unknown;
+        suggestedRenderer: ReturnType<typeof rendererRegistry.suggest>;
+      } = {
         executionId: execution.id,
         messages,
         evidence,
+        suggestedRenderer: rendererRegistry.suggest(messages),
       };
       if (description !== undefined) response.description = description;
       return c.json(response);
@@ -602,6 +621,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         value,
         evidence,
         evidenceRefs: [{ id: evidenceRow.id, kind: evidenceRow.kind, artifactRef: evidenceRow.artifactRef }],
+        suggestedRenderer: rendererRegistry.suggest(value),
       });
     } catch (err) {
       const endedAt = new Date();

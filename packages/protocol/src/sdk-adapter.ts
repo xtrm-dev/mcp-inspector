@@ -146,54 +146,36 @@ export function createSdkAdapter(): McpClientAdapter {
         { name: input.name, arguments: input.arguments as Record<string, unknown> },
         callOpts,
       );
+      return mapCallToolResult(s.client, result);
+    },
 
-      const era = s.client.getProtocolEra() as ProtocolEra | undefined;
-      const version = s.client.getNegotiatedProtocolVersion();
-      const responseMeta = (result as { _meta?: unknown })._meta;
-
-      // Tasks extension: SDK v2 removed core Task types (deprecated
-       // 2025-11-25 vocabulary) so we detect the modern task result by its
-       // string discriminant. Full poll/get/cancel lifecycle requires
-       // @modelcontextprotocol/ext-tasks (not installed) — see #5.
-      // ponytail: taskId + status surfaced via evidence; consumer polls externally.
-      const rawResultType = (result as { resultType?: unknown }).resultType;
-      if (rawResultType === "task") {
-        const r = result as { taskId?: unknown; status?: unknown };
-        const extensions: Record<string, JsonValue> = {};
-        if (typeof r.taskId === "string") extensions["taskId"] = r.taskId;
-        if (typeof r.status === "string") extensions["status"] = r.status;
-        const evidence: ProtocolEvidence = { resultType: "task" };
-        if (era) evidence.era = era;
-        if (version) evidence.version = version;
-        if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
-        if (Object.keys(extensions).length > 0) evidence.extensions = extensions;
-        return { value: null, evidence };
-      }
-
-      if (isInputRequiredResult(result)) {
-        // MRTR: value is null (no tool value yet); consumer inspects
-        // extensions to fulfil the embedded requests and retry.
-        const extensions: Record<string, JsonValue> = {};
-        if (result.inputRequests !== undefined) {
-          extensions["inputRequests"] = result.inputRequests as unknown as JsonValue;
-        }
-        if (result.requestState !== undefined) {
-          extensions["requestState"] = result.requestState;
-        }
-        const evidence: ProtocolEvidence = { resultType: "input_required" };
-        if (era) evidence.era = era;
-        if (version) evidence.version = version;
-        if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
-        if (Object.keys(extensions).length > 0) evidence.extensions = extensions;
-        return { value: null, evidence };
-      }
-
-      const value = normalizeResult(result);
-      const evidence: ProtocolEvidence = { resultType: "complete" };
-      if (era) evidence.era = era;
-      if (version) evidence.version = version;
-      if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
-      return { value, evidence };
+    async continueCall(input) {
+      const s = requireSession(sessions, input.serverId);
+      // The typed callTool()'s params schema rejects requestState /
+      // inputResponses, so continuation drops down to the untyped request()
+      // overload with an explicit tools/call method literal.
+      const requestOpts: { signal?: AbortSignal; allowInputRequired: true } = {
+        allowInputRequired: true,
+      };
+      if (input.signal) requestOpts.signal = input.signal;
+      const result = await (s.client as unknown as {
+        request: (
+          r: { method: string; params: Record<string, unknown> },
+          o: unknown,
+        ) => Promise<unknown>;
+      }).request(
+        {
+          method: "tools/call",
+          params: {
+            name: input.name,
+            arguments: input.arguments,
+            requestState: input.requestState,
+            inputResponses: input.inputResponses,
+          },
+        },
+        requestOpts,
+      );
+      return mapCallToolResult(s.client, result);
     },
 
     async listResources(serverId: string): Promise<McpResourceDefinition[]> {
@@ -263,6 +245,53 @@ export function createSdkAdapter(): McpClientAdapter {
   };
 
   return adapter;
+}
+
+// Shared callTool + continueCall result mapping.
+function mapCallToolResult(
+  client: Client,
+  result: unknown,
+): { value: JsonValue; evidence: ProtocolEvidence } {
+  const era = client.getProtocolEra() as ProtocolEra | undefined;
+  const version = client.getNegotiatedProtocolVersion();
+  const responseMeta = (result as { _meta?: unknown })._meta;
+
+  const rawResultType = (result as { resultType?: unknown }).resultType;
+  if (rawResultType === "task") {
+    const r = result as { taskId?: unknown; status?: unknown };
+    const extensions: Record<string, JsonValue> = {};
+    if (typeof r.taskId === "string") extensions["taskId"] = r.taskId;
+    if (typeof r.status === "string") extensions["status"] = r.status;
+    const evidence: ProtocolEvidence = { resultType: "task" };
+    if (era) evidence.era = era;
+    if (version) evidence.version = version;
+    if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
+    if (Object.keys(extensions).length > 0) evidence.extensions = extensions;
+    return { value: null, evidence };
+  }
+
+  if (isInputRequiredResult(result)) {
+    const extensions: Record<string, JsonValue> = {};
+    if (result.inputRequests !== undefined) {
+      extensions["inputRequests"] = result.inputRequests as unknown as JsonValue;
+    }
+    if (result.requestState !== undefined) {
+      extensions["requestState"] = result.requestState;
+    }
+    const evidence: ProtocolEvidence = { resultType: "input_required" };
+    if (era) evidence.era = era;
+    if (version) evidence.version = version;
+    if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
+    if (Object.keys(extensions).length > 0) evidence.extensions = extensions;
+    return { value: null, evidence };
+  }
+
+  const value = normalizeResult(result);
+  const evidence: ProtocolEvidence = { resultType: "complete" };
+  if (era) evidence.era = era;
+  if (version) evidence.version = version;
+  if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
+  return { value, evidence };
 }
 
 function requireSession(sessions: Map<string, Session>, serverId: string): Session {

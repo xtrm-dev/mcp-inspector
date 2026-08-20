@@ -1,18 +1,23 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { cors } from "hono/cors";
 import { streamSSE } from "hono/streaming";
 import { z } from "zod";
 import {
   MODERN_PROTOCOL_VERSION,
   type JsonObject,
+  type JsonValue,
   type McpClientAdapter,
+  type ProtocolEvidence,
 } from "@mcp-inspector-x/protocol";
 import type {
   Storage,
   EventRow,
-  UpsertServerInput,
+  EvidenceRef,
   ExecutionRecord,
+  ExecutionRound,
+  RoundKind,
   TraceLink,
+  UpsertServerInput,
 } from "@mcp-inspector-x/storage";
 import { createRendererRegistry, renderInlineMaxBytes, type RendererKind, type RenderPageResult } from "@mcp-inspector-x/renderers";
 import {
@@ -738,32 +743,70 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         artifactRef: evidenceBlob.hash,
       });
 
+      // Phase G: derive MRTR / Tasks status from the adapter's evidence.
+      // Persist requestState/taskId into the round's inline JSON so
+      // POST /executions/:id/rounds can recover them on the follow-up.
+      const isInputRequired = (evidence as ProtocolEvidence).resultType === "input_required";
+      const task = isInputRequired ? null : detectTaskShape(value as JsonValue);
+      const resultPayload: JsonValue = isInputRequired
+        ? {
+            status: "input_required",
+            requestState:
+              ((evidence as ProtocolEvidence).extensions?.["requestState"] ?? null) as JsonValue,
+            inputRequests:
+              ((evidence as ProtocolEvidence).extensions?.["inputRequests"] ?? null) as JsonValue,
+          }
+        : ((value ?? null) as JsonValue);
+      const resultPayloadJson = JSON.stringify(resultPayload);
+      const inlineResultForRound =
+        resultPayloadJson.length <= INLINE_RESULT_LIMIT ? resultPayloadJson : null;
+      let resultArtifactForRound: string | null = null;
+      if (inlineResultForRound === null) {
+        const rec = deps.storage.artifacts.put({
+          bytes: new TextEncoder().encode(resultPayloadJson),
+          mediaType: "application/json",
+        });
+        resultArtifactForRound = rec.hash;
+      }
+      let nextStatus: string;
+      let endedAtIso: string | null;
+      let eventKind: string;
+      if (isInputRequired) {
+        nextStatus = "input_required";
+        endedAtIso = null;
+        eventKind = "execution.input_required";
+      } else if (task?.status === "working") {
+        nextStatus = "task_working";
+        endedAtIso = null;
+        eventKind = "execution.task_update";
+      } else {
+        nextStatus = "complete";
+        endedAtIso = endedAt.toISOString();
+        eventKind = "execution.complete";
+      }
       const round = deps.storage.rounds.append({
         executionId: execution.id,
         roundIndex: 0,
         kind: "initial",
         argumentsJson: JSON.stringify(args),
-        resultInlineJson: inlineResult,
-        resultArtifact,
+        resultInlineJson: inlineResultForRound,
+        resultArtifact: resultArtifactForRound,
         durationMs: endedAt.getTime() - startedAt.getTime(),
         startedAt: startedAt.toISOString(),
-        endedAt: endedAt.toISOString(),
+        endedAt: endedAtIso,
       });
-      const done = deps.storage.executions.updateStatus(
-        execution.id,
-        "complete",
-        endedAt.toISOString(),
-      );
+      const done = deps.storage.executions.updateStatus(execution.id, nextStatus, endedAtIso);
       deps.storage.events.append({
         executionId: execution.id,
-        kind: "execution.complete",
+        kind: eventKind,
         payload: {
           serverId: id,
           capabilityId,
+          status: nextStatus,
           durationMs: round.durationMs,
           evidenceRefs: [evidenceRow.id],
-          resultInline: inlineResult !== null,
-          resultArtifact,
+          resultInline: inlineResultForRound !== null,
+          resultArtifact: resultArtifactForRound,
         },
       });
 
@@ -780,6 +823,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         : null;
       const response: {
         executionId: string;
+        status: string;
         evidence: unknown;
         evidenceRefs: Array<{ id: string; kind: string; artifactRef: string }>;
         suggestedRenderer: RendererKind;
@@ -787,6 +831,8 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         value?: unknown;
         artifactRef?: string;
         preview?: RenderPageResult;
+        inputRequests?: unknown;
+        requestState?: unknown;
         sourceHint?: {
           revisionId: string;
           filePath: string;
@@ -796,11 +842,16 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         };
       } = {
         executionId: done.id,
+        status: nextStatus,
         evidence,
         evidenceRefs: [{ id: evidenceRow.id, kind: evidenceRow.kind, artifactRef: evidenceRow.artifactRef }],
         suggestedRenderer: surface.kind,
         spilled: surface.spilled,
       };
+      if (isInputRequired) {
+        response.inputRequests = (evidence as ProtocolEvidence).extensions?.["inputRequests"] ?? null;
+        response.requestState = (evidence as ProtocolEvidence).extensions?.["requestState"] ?? null;
+      }
       if (surface.spilled) {
         response.artifactRef = surface.artifactRef;
         response.preview = surface.preview;
@@ -1379,6 +1430,10 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     return c.json({ trace: record }, 201);
   });
 
+  // ---- MRTR + Tasks follow-up rounds (Phase G) ----
+
+  app.post("/api/v1/executions/:id/rounds", (c) => appendRound(c, deps));
+
   // ---- Cancel + retry (Phase E slice 2B) ----
 
   app.post("/api/v1/executions/:id/cancel", (c) => {
@@ -1811,4 +1866,308 @@ function buildAgentRunOverlay(executions: ExecutionRecord[], traceLinks: TraceLi
   }
   overlay.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
   return overlay;
+}
+
+// ---- MRTR + Tasks follow-up round handling (Phase G) ----
+
+const RoundsBodySchema = z.object({
+  inputResponses: z.record(z.string(), z.unknown()).optional(),
+  taskAction: z.enum(["poll", "cancel"]).optional(),
+});
+
+interface RoundOutcomeInput {
+  executionId: string;
+  roundIndex: number;
+  kind: RoundKind;
+  argumentsJson: string;
+  startedAt: Date;
+  serverId: string;
+  capabilityId: string;
+  value: JsonValue;
+  evidence: ProtocolEvidence;
+}
+
+interface RoundFailureInput {
+  executionId: string;
+  roundIndex: number;
+  kind: RoundKind;
+  argumentsJson: string;
+  startedAt: Date;
+  serverId: string;
+  capabilityId: string;
+  error: unknown;
+}
+
+function detectTaskShape(value: JsonValue): { taskId: string; status: string } | null {
+  if (value !== null && typeof value === "object" && !Array.isArray(value)) {
+    const v = value as Record<string, JsonValue>;
+    const taskId = v["taskId"];
+    const status = v["status"];
+    if (typeof taskId === "string" && typeof status === "string") return { taskId, status };
+  }
+  return null;
+}
+
+function recordRoundOutcome(
+  deps: GatewayDeps,
+  input: RoundOutcomeInput,
+): { round: ExecutionRound; execution: ExecutionRecord; evidenceRow: EvidenceRef } {
+  const endedAt = new Date();
+  const isInputRequired = input.evidence.resultType === "input_required";
+  const task = isInputRequired ? null : detectTaskShape(input.value);
+
+  const resultPayload: JsonValue = isInputRequired
+    ? {
+        status: "input_required",
+        requestState: (input.evidence.extensions?.["requestState"] ?? null) as JsonValue,
+        inputRequests: (input.evidence.extensions?.["inputRequests"] ?? null) as JsonValue,
+      }
+    : ((input.value ?? null) as JsonValue);
+  const resultJson = JSON.stringify(resultPayload);
+  const inlineResult = resultJson.length <= INLINE_RESULT_LIMIT ? resultJson : null;
+  let resultArtifact: string | null = null;
+  if (inlineResult === null) {
+    const rec = deps.storage.artifacts.put({
+      bytes: new TextEncoder().encode(resultJson),
+      mediaType: "application/json",
+    });
+    resultArtifact = rec.hash;
+  }
+
+  const evidenceBlob = deps.storage.artifacts.put({
+    bytes: new TextEncoder().encode(JSON.stringify(input.evidence)),
+    mediaType: "application/json",
+  });
+  const evidenceRow = deps.storage.evidence.append({
+    executionId: input.executionId,
+    kind: "raw_response",
+    artifactRef: evidenceBlob.hash,
+  });
+
+  let status: string;
+  let endedAtIso: string | null;
+  let eventKind: string;
+  if (isInputRequired) {
+    status = "input_required";
+    endedAtIso = null;
+    eventKind = "execution.input_required";
+  } else if (task?.status === "working") {
+    status = "task_working";
+    endedAtIso = null;
+    eventKind = "execution.task_update";
+  } else if (task?.status === "cancelled") {
+    status = "cancelled";
+    endedAtIso = endedAt.toISOString();
+    eventKind = "execution.task_update";
+  } else {
+    status = "complete";
+    endedAtIso = endedAt.toISOString();
+    eventKind = "execution.complete";
+  }
+
+  const round = deps.storage.rounds.append({
+    executionId: input.executionId,
+    roundIndex: input.roundIndex,
+    kind: input.kind,
+    argumentsJson: input.argumentsJson,
+    resultInlineJson: inlineResult,
+    resultArtifact,
+    durationMs: endedAt.getTime() - input.startedAt.getTime(),
+    startedAt: input.startedAt.toISOString(),
+    endedAt: endedAtIso,
+  });
+  const execution = deps.storage.executions.updateStatus(input.executionId, status, endedAtIso);
+  deps.storage.events.append({
+    executionId: input.executionId,
+    kind: eventKind,
+    payload: {
+      serverId: input.serverId,
+      capabilityId: input.capabilityId,
+      status,
+      durationMs: round.durationMs,
+      evidenceRefs: [evidenceRow.id],
+      resultInline: inlineResult !== null,
+      resultArtifact,
+    },
+  });
+  return { round, execution, evidenceRow };
+}
+
+function recordRoundFailure(deps: GatewayDeps, input: RoundFailureInput): void {
+  const endedAt = new Date();
+  const message = errMsg(input.error);
+  deps.storage.rounds.append({
+    executionId: input.executionId,
+    roundIndex: input.roundIndex,
+    kind: input.kind,
+    argumentsJson: input.argumentsJson,
+    errorJson: JSON.stringify({ message }),
+    durationMs: endedAt.getTime() - input.startedAt.getTime(),
+    startedAt: input.startedAt.toISOString(),
+    endedAt: endedAt.toISOString(),
+  });
+  deps.storage.executions.updateStatus(input.executionId, "failed", endedAt.toISOString());
+  deps.storage.events.append({
+    executionId: input.executionId,
+    kind: "execution.failed",
+    payload: { serverId: input.serverId, capabilityId: input.capabilityId, error: message },
+  });
+}
+
+function recoverRequestState(resultInlineJson: string | null): string | undefined {
+  if (!resultInlineJson) return undefined;
+  try {
+    const parsed = JSON.parse(resultInlineJson) as { requestState?: unknown };
+    return typeof parsed.requestState === "string" ? parsed.requestState : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function recoverTaskId(resultInlineJson: string | null): string | undefined {
+  if (!resultInlineJson) return undefined;
+  try {
+    const parsed = JSON.parse(resultInlineJson) as { taskId?: unknown };
+    return typeof parsed.taskId === "string" ? parsed.taskId : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function appendRound(c: Context, deps: GatewayDeps): Promise<Response> {
+  const id = c.req.param("id") as string;
+  const execution = deps.storage.executions.get(id);
+  if (!execution) return c.json({ error: `unknown execution '${id}'` }, 404);
+
+  let body: z.infer<typeof RoundsBodySchema>;
+  try {
+    body = RoundsBodySchema.parse(await c.req.json().catch(() => ({})));
+  } catch {
+    return c.json({ error: "invalid body" }, 400);
+  }
+
+  const rounds = deps.storage.rounds.listForExecution(id);
+  const lastRound = rounds[rounds.length - 1];
+  if (!lastRound) return c.json({ error: `execution '${id}' has no rounds yet` }, 400);
+
+  const sep = "::tool::";
+  const sepIdx = execution.capabilityId.indexOf(sep);
+  if (sepIdx === -1) {
+    return c.json({ error: `execution '${id}' is not a tool-call execution` }, 400);
+  }
+  const toolName = execution.capabilityId.slice(sepIdx + sep.length);
+  const serverId = execution.serverId;
+  if (!deps.serverManager.getBinding(serverId)) {
+    return c.json({ error: `server '${serverId}' not connected` }, 409);
+  }
+  const firstRound = rounds[0];
+  const originalArgs = (
+    firstRound?.argumentsJson ? JSON.parse(firstRound.argumentsJson) : {}
+  ) as Record<string, unknown>;
+
+  const startedAt = new Date();
+  const roundIndex = rounds.length;
+
+  if (execution.status === "input_required") {
+    if (!body.inputResponses) {
+      return c.json({ error: `execution '${id}' is awaiting inputResponses` }, 400);
+    }
+    const requestState = recoverRequestState(lastRound.resultInlineJson);
+    if (!requestState) {
+      return c.json({ error: `execution '${id}' has no recoverable requestState` }, 400);
+    }
+    try {
+      const { value, evidence } = await deps.adapter.continueCall({
+        serverId,
+        name: toolName,
+        arguments: originalArgs as JsonObject,
+        requestState,
+        inputResponses: body.inputResponses as Record<string, JsonValue>,
+      });
+      const outcome = recordRoundOutcome(deps, {
+        executionId: id,
+        roundIndex,
+        kind: "input_response",
+        argumentsJson: JSON.stringify(body.inputResponses),
+        startedAt,
+        serverId,
+        capabilityId: execution.capabilityId,
+        value,
+        evidence,
+      });
+      return c.json({
+        executionId: id,
+        status: outcome.execution.status,
+        value,
+        evidence,
+        inputRequests: evidence.extensions?.["inputRequests"] ?? null,
+        round: outcome.round,
+      });
+    } catch (err) {
+      recordRoundFailure(deps, {
+        executionId: id,
+        roundIndex,
+        kind: "input_response",
+        argumentsJson: JSON.stringify(body.inputResponses),
+        startedAt,
+        serverId,
+        capabilityId: execution.capabilityId,
+        error: err,
+      });
+      return c.json({ executionId: id, error: errMsg(err) }, 502);
+    }
+  }
+
+  if (execution.status === "task_working") {
+    if (!body.taskAction) {
+      return c.json({ error: `execution '${id}' is a running task; pass taskAction` }, 400);
+    }
+    const taskId = recoverTaskId(lastRound.resultInlineJson);
+    if (!taskId) {
+      return c.json({ error: `execution '${id}' has no recoverable taskId` }, 400);
+    }
+    const pollArgs = { ...originalArgs, taskId, cancel: body.taskAction === "cancel" };
+    try {
+      const { value, evidence } = await deps.adapter.callTool({
+        serverId,
+        name: toolName,
+        arguments: pollArgs as JsonObject,
+      });
+      const outcome = recordRoundOutcome(deps, {
+        executionId: id,
+        roundIndex,
+        kind: "task_update",
+        argumentsJson: JSON.stringify(pollArgs),
+        startedAt,
+        serverId,
+        capabilityId: execution.capabilityId,
+        value,
+        evidence,
+      });
+      return c.json({
+        executionId: id,
+        status: outcome.execution.status,
+        value,
+        evidence,
+        round: outcome.round,
+      });
+    } catch (err) {
+      recordRoundFailure(deps, {
+        executionId: id,
+        roundIndex,
+        kind: "task_update",
+        argumentsJson: JSON.stringify(pollArgs),
+        startedAt,
+        serverId,
+        capabilityId: execution.capabilityId,
+        error: err,
+      });
+      return c.json({ executionId: id, error: errMsg(err) }, 502);
+    }
+  }
+
+  return c.json(
+    { error: `execution '${id}' is not resumable (status '${execution.status}')` },
+    400,
+  );
 }

@@ -112,6 +112,19 @@ export interface McpClientAdapter {
     arguments: JsonObject;
     signal?: AbortSignal;
   }): Promise<{ value: JsonValue; evidence: ProtocolEvidence }>;
+  /**
+   * Resume an `input_required` MRTR round: re-invokes the same tool with
+   * the caller's `inputResponses` plus a byte-exact echo of the opaque
+   * `requestState` the server minted on the prior round.
+   */
+  continueCall(input: {
+    serverId: string;
+    name: string;
+    arguments: JsonObject;
+    requestState: string;
+    inputResponses: Record<string, JsonValue>;
+    signal?: AbortSignal;
+  }): Promise<{ value: JsonValue; evidence: ProtocolEvidence }>;
   listResources(serverId: string): Promise<McpResourceDefinition[]>;
   listResourceTemplates(serverId: string): Promise<McpResourceTemplateDefinition[]>;
   readResource(input: { serverId: string; uri: string }): Promise<{

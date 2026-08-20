@@ -678,7 +678,7 @@ export function createExecutionRepository(db: SqliteDb): ExecutionRepository {
 
 // ---------- Execution rounds ----------
 
-export type RoundKind = "initial" | "input_response" | "retry";
+export type RoundKind = "initial" | "input_response" | "retry" | "task_update";
 
 export interface ExecutionRound {
   id: string;

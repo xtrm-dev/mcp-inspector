@@ -254,7 +254,8 @@ describe("gateway HTTP routes (wired to the SDK adapter + demo MCP)", () => {
         body: JSON.stringify({
           displayName: "stdio-server",
           transport: "stdio",
-          endpoint: JSON.stringify({ command: "node", args: ["dummy.js"] }),
+          command: "node",
+          args: ["dummy.js"],
         }),
       })
     ).json()) as { server: { id: string } };
@@ -263,7 +264,7 @@ describe("gateway HTTP routes (wired to the SDK adapter + demo MCP)", () => {
     });
     const body = (await r.json()) as { reachable: boolean; message: string };
     expect(body.reachable).toBe(false);
-    expect(body.message).toMatch(/Phase B slice 2/);
+    expect(body.message).toMatch(/not implemented/);
     await app.request(`/api/v1/servers/${created.server.id}`, { method: "DELETE" });
   });
 

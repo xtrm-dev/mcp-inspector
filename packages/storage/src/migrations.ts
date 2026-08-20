@@ -210,11 +210,22 @@ CREATE TABLE source_revision (
 CREATE INDEX idx_source_revision_repo ON source_revision(repository_ref, registered_at DESC);
 `;
 
+// Phase B slice 2: stdio launch parameters on server_definition. Runner
+// spawns `command` (+ args/cwd/env) as the child MCP process; nullable
+// because streamable-http/sse servers never populate them.
+const V5_STDIO_SERVER_FIELDS = `
+ALTER TABLE server_definition ADD COLUMN command TEXT;
+ALTER TABLE server_definition ADD COLUMN args_json TEXT;
+ALTER TABLE server_definition ADD COLUMN cwd TEXT;
+ALTER TABLE server_definition ADD COLUMN env_json TEXT;
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "schema-v1", sql: V1_SCHEMA },
   { version: 2, name: "agent-run-links", sql: V2_AGENT_RUN_LINKS },
   { version: 3, name: "traces", sql: V3_TRACES },
   { version: 4, name: "source-revision", sql: V4_SOURCE_REVISION },
+  { version: 5, name: "stdio-server-fields", sql: V5_STDIO_SERVER_FIELDS },
 ];
 
 export function checksum(sql: string): string {

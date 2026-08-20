@@ -10,6 +10,41 @@ Early implementation. The protocol target is MCP `2026-07-28` modern era, with e
 
 Canonical product requirements and V1 completion scope: [`docs/product/PRD.md`](docs/product/PRD.md).
 
+## Install / quickstart
+
+```bash
+npx @xtrm-dev/mcp-inspector-x@latest
+```
+
+This starts the local supervisor (privileged runner + gateway + web UI), seeds a built-in demo MCP server, and opens `http://127.0.0.1:6275/` in your browser. Requires Node.js `>=22.19.0`. Data (SQLite + artifacts) lives under `~/.mcp-inspector-x` by default — override with `MIX_DATA_DIR`. Stop with `Ctrl-C`; the supervisor drains the runner and gateway cleanly.
+
+Useful environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `PORT` | `6275` | Gateway/web HTTP port |
+| `MIX_DATA_DIR` | `~/.mcp-inspector-x` | SQLite DB, artifacts, runner socket/token |
+| `MIX_NO_OPEN` | unset | Set to `1` to skip auto-opening a browser |
+
+### Building/running from source
+
+```bash
+git clone https://github.com/xtrm-dev/mcp-inspector.git
+cd mcp-inspector
+npm install
+npm run dev          # runner + gateway + web dev server, all in one supervisor
+```
+
+### Packaging a distributable build
+
+```bash
+npm run package       # bundles runner+gateway+web into a tarball under dist-package/
+npm run smoke          # boots the packaged tarball and exercises it end-to-end over real HTTP
+npm run conformance   # runs the official MCP conformance harness against the packaged client, writes conformance/evidence/
+```
+
+`npm run package` produces `dist-package/<name>-<version>.tgz` plus a `.sha256` checksum. Extracting it and running `npm install --omit=dev && node bin.mjs` inside is exactly what `npx` does on a user's machine — that's also what `npm run smoke` automates as its validation.
+
 ## Branch model
 
 `dev` is the default development/integration branch. `main` is stable/latest only.

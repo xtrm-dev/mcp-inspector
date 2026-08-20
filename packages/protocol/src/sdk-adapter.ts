@@ -2,6 +2,7 @@ import {
   Client,
   StreamableHTTPClientTransport,
   isInputRequiredResult,
+  type RequestMethod,
   type Transport,
 } from "@modelcontextprotocol/client";
 import {
@@ -34,12 +35,56 @@ const CLIENT_INFO = { name: "mcp-inspector-x", version: "0.0.0" } as const;
  *
  * Supports streamable-http (SDK-owned HTTP transport) and stdio (a UDS
  * transport over a socket the privileged runner already spawned the child
- * behind — see ADR-0003), single-round tools/call, evidence populated from
- * negotiated era + response _meta.
+ * behind — see ADR-0003), tools/call plus MRTR continuation, evidence
+ * populated from negotiated era + response _meta.
  *
- * ponytail: MRTR/input_required, Tasks extension, streaming/notifications,
- * resources/prompts, auth pass-through are deferred to later slices — extend the
- * McpClientAdapter interface (and bump protocolAdapterContractVersion) when they land.
+ * ---
+ * SDK-VERIFIED MRTR CONTINUATION CONTRACT (Phase G, mcp-inspector-moc.3)
+ * ---
+ * @modelcontextprotocol/client@2.0.0's typed `Client.callTool()` wrapper has
+ * NO way to send `requestState` / `inputResponses` on retry — its params
+ * type (`CallToolRequestParams`, dist/index-D4xIIEF6.d.mts:484) has no room
+ * for either field. Verified directly: passing them to `callTool()` is a
+ * compile error —
+ *   TS2353: Object literal may only specify known properties, and
+ *   'requestState' does not exist in type '{ name: string; _meta?: ...;
+ *   task?: { ttl?: number | undefined; } | undefined; arguments?: ...; }'.
+ * (reproduced against the installed package; see packages/protocol's
+ * tsconfig — no local fixture needed, the SDK's own bundled .d.mts fails
+ * the assignment.)
+ *
+ * The SDK's own docs for manual MRTR mode (`RequestOptions.allowInputRequired`,
+ * dist/index-D4xIIEF6.d.mts:1828-1839) say the caller is "responsible for
+ * gathering the requested input and retrying the original request with
+ * `inputResponses` / `requestState` params and a fresh request" — that
+ * "request" is the lower-level, loosely-typed generic overload of
+ * `Protocol.request()` that `Client` inherits (dist/index-D4xIIEF6.d.mts:
+ * 2222-2224 — `Client extends Protocol<ClientContext>`, declared 1889):
+ *
+ *   request<M extends RequestMethod>(request: {
+ *     method: M;
+ *     params?: Record<string, unknown>;
+ *   }, options?: RequestOptions): Promise<ResultTypeMap[M]>;
+ *
+ * `params` there is an untyped `Record<string, unknown>` bag (unlike
+ * `callTool`'s strict `CallToolRequestParams`), so it accepts
+ * `requestState` / `inputResponses` alongside the normal `name` /
+ * `arguments`. `continueCall()` below calls exactly this method:
+ *
+ *   client.request(
+ *     { method: "tools/call", params: { name, arguments, requestState, inputResponses } },
+ *     { allowInputRequired: true, signal },
+ *   )
+ *
+ * verified by direct compilation against the installed
+ * @modelcontextprotocol/client@2.0.0 package (node_modules/@modelcontextprotocol/client/package.json).
+ *
+ * ponytail: streaming/notifications, resources/prompts auth pass-through
+ * remain deferred to later slices — extend McpClientAdapter (and bump
+ * protocolAdapterContractVersion) when they land. Tasks lifecycle: see the
+ * TASKS_EXTENSION_KEY doc comment in ./index — the installed SDK has no
+ * wire-level task methods at all, so Tasks are modeled at the gateway
+ * layer on top of ordinary tools/call, not through this adapter.
  */
 export function createSdkAdapter(): McpClientAdapter {
   const sessions = new Map<string, Session>();
@@ -146,54 +191,31 @@ export function createSdkAdapter(): McpClientAdapter {
         { name: input.name, arguments: input.arguments as Record<string, unknown> },
         callOpts,
       );
+      return toCallToolOutput(s.client, result);
+    },
 
-      const era = s.client.getProtocolEra() as ProtocolEra | undefined;
-      const version = s.client.getNegotiatedProtocolVersion();
-      const responseMeta = (result as { _meta?: unknown })._meta;
-
-      // Tasks extension: SDK v2 removed core Task types (deprecated
-       // 2025-11-25 vocabulary) so we detect the modern task result by its
-       // string discriminant. Full poll/get/cancel lifecycle requires
-       // @modelcontextprotocol/ext-tasks (not installed) — see #5.
-      // ponytail: taskId + status surfaced via evidence; consumer polls externally.
-      const rawResultType = (result as { resultType?: unknown }).resultType;
-      if (rawResultType === "task") {
-        const r = result as { taskId?: unknown; status?: unknown };
-        const extensions: Record<string, JsonValue> = {};
-        if (typeof r.taskId === "string") extensions["taskId"] = r.taskId;
-        if (typeof r.status === "string") extensions["status"] = r.status;
-        const evidence: ProtocolEvidence = { resultType: "task" };
-        if (era) evidence.era = era;
-        if (version) evidence.version = version;
-        if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
-        if (Object.keys(extensions).length > 0) evidence.extensions = extensions;
-        return { value: null, evidence };
-      }
-
-      if (isInputRequiredResult(result)) {
-        // MRTR: value is null (no tool value yet); consumer inspects
-        // extensions to fulfil the embedded requests and retry.
-        const extensions: Record<string, JsonValue> = {};
-        if (result.inputRequests !== undefined) {
-          extensions["inputRequests"] = result.inputRequests as unknown as JsonValue;
-        }
-        if (result.requestState !== undefined) {
-          extensions["requestState"] = result.requestState;
-        }
-        const evidence: ProtocolEvidence = { resultType: "input_required" };
-        if (era) evidence.era = era;
-        if (version) evidence.version = version;
-        if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
-        if (Object.keys(extensions).length > 0) evidence.extensions = extensions;
-        return { value: null, evidence };
-      }
-
-      const value = normalizeResult(result);
-      const evidence: ProtocolEvidence = { resultType: "complete" };
-      if (era) evidence.era = era;
-      if (version) evidence.version = version;
-      if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
-      return { value, evidence };
+    async continueCall(input) {
+      const s = requireSession(sessions, input.serverId);
+      // See the top-of-file comment: callTool()'s typed params reject
+      // requestState/inputResponses, so continuation goes through the
+      // lower-level, loosely-typed Protocol.request() overload instead.
+      const requestOpts: { signal?: AbortSignal; allowInputRequired: true } = {
+        allowInputRequired: true,
+      };
+      if (input.signal) requestOpts.signal = input.signal;
+      const result = await s.client.request(
+        {
+          method: "tools/call" as RequestMethod,
+          params: {
+            name: input.name,
+            arguments: input.arguments,
+            requestState: input.requestState,
+            inputResponses: input.inputResponses,
+          },
+        },
+        requestOpts,
+      );
+      return toCallToolOutput(s.client, result);
     },
 
     async listResources(serverId: string): Promise<McpResourceDefinition[]> {
@@ -263,6 +285,65 @@ export function createSdkAdapter(): McpClientAdapter {
   };
 
   return adapter;
+}
+
+/**
+ * Shared `callTool`/`continueCall` result → McpClientAdapter output mapping.
+ * Both entry points invoke the SDK with `allowInputRequired: true` and get
+ * back the same neutral `CallToolResult | InputRequiredResult` union, so the
+ * era/evidence/task/MRTR classification only needs to live once.
+ */
+function toCallToolOutput(
+  client: Client,
+  result: unknown,
+): { value: JsonValue; evidence: ProtocolEvidence } {
+  const era = client.getProtocolEra() as ProtocolEra | undefined;
+  const version = client.getNegotiatedProtocolVersion();
+  const responseMeta = (result as { _meta?: unknown })._meta;
+
+  // Tasks extension: SDK v2 removed core Task types (deprecated
+  // 2025-11-25 vocabulary) so we detect the modern task result by its
+  // string discriminant. Full poll/get/cancel lifecycle requires
+  // @modelcontextprotocol/ext-tasks (not installed) — see #5.
+  // ponytail: taskId + status surfaced via evidence; consumer polls externally.
+  const rawResultType = (result as { resultType?: unknown }).resultType;
+  if (rawResultType === "task") {
+    const r = result as { taskId?: unknown; status?: unknown };
+    const extensions: Record<string, JsonValue> = {};
+    if (typeof r.taskId === "string") extensions["taskId"] = r.taskId;
+    if (typeof r.status === "string") extensions["status"] = r.status;
+    const evidence: ProtocolEvidence = { resultType: "task" };
+    if (era) evidence.era = era;
+    if (version) evidence.version = version;
+    if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
+    if (Object.keys(extensions).length > 0) evidence.extensions = extensions;
+    return { value: null, evidence };
+  }
+
+  if (isInputRequiredResult(result)) {
+    // MRTR: value is null (no tool value yet); consumer inspects
+    // extensions to fulfil the embedded requests and retry.
+    const extensions: Record<string, JsonValue> = {};
+    if (result.inputRequests !== undefined) {
+      extensions["inputRequests"] = result.inputRequests as unknown as JsonValue;
+    }
+    if (result.requestState !== undefined) {
+      extensions["requestState"] = result.requestState;
+    }
+    const evidence: ProtocolEvidence = { resultType: "input_required" };
+    if (era) evidence.era = era;
+    if (version) evidence.version = version;
+    if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
+    if (Object.keys(extensions).length > 0) evidence.extensions = extensions;
+    return { value: null, evidence };
+  }
+
+  const value = normalizeResult(result);
+  const evidence: ProtocolEvidence = { resultType: "complete" };
+  if (era) evidence.era = era;
+  if (version) evidence.version = version;
+  if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
+  return { value, evidence };
 }
 
 function requireSession(sessions: Map<string, Session>, serverId: string): Session {

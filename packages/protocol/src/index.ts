@@ -112,6 +112,20 @@ export interface McpClientAdapter {
     arguments: JsonObject;
     signal?: AbortSignal;
   }): Promise<{ value: JsonValue; evidence: ProtocolEvidence }>;
+  /**
+   * Resume an `input_required` MRTR round: re-invokes the same tool with
+   * the caller's `inputResponses` plus a byte-exact echo of the opaque
+   * `requestState` the server minted on the prior round. See the
+   * top-of-file comment in sdk-adapter.ts for the verified SDK call shape.
+   */
+  continueCall(input: {
+    serverId: string;
+    name: string;
+    arguments: JsonObject;
+    requestState: string;
+    inputResponses: Record<string, JsonValue>;
+    signal?: AbortSignal;
+  }): Promise<{ value: JsonValue; evidence: ProtocolEvidence }>;
   listResources(serverId: string): Promise<McpResourceDefinition[]>;
   listResourceTemplates(serverId: string): Promise<McpResourceTemplateDefinition[]>;
   readResource(input: { serverId: string; uri: string }): Promise<{
@@ -132,18 +146,29 @@ export interface McpClientAdapter {
  * after its modern-era behavior is covered by conformance tests; product layers
  * depend on this interface rather than SDK-specific lifecycle details.
  */
-export const protocolAdapterContractVersion = 3 as const;
+export const protocolAdapterContractVersion = 4 as const;
 
 /**
  * Tasks extension key. Client opts in by advertising this in
  * `clientCapabilities.extensions`; server may then return
  * `resultType: 'task'` results carrying a taskId the consumer polls.
  *
- * ponytail: full poll/get/cancel lifecycle requires `@modelcontextprotocol/ext-tasks`
- * or re-declared wire schemas (SDK v2 deprecated the 2025 Task vocabulary
- * and does not ship modern Task types). This adapter advertises the
- * capability and surfaces incoming task results via evidence — polling
- * is deferred until the ext-tasks integration slice.
+ * ponytail: the installed @modelcontextprotocol/client@2.0.0 marks the
+ * ENTIRE 2025-11-25 Task wire vocabulary (TaskCreationParamsSchema,
+ * CreateTaskResultSchema, tasks/get, tasks/result, tasks/cancel,
+ * tasks/list) `@deprecated ... no SDK runtime; kept importable for
+ * interoperability only`, and the 2026-07-28 era registry has ZERO
+ * task-related methods at all (verified against
+ * node_modules/@modelcontextprotocol/client/dist/src-D_zzAWoS.mjs's
+ * `rev2026-07-28/registry.ts` region — no `tasks/*` key). There is no
+ * live wire-level task poll/get/cancel to call through this SDK version.
+ * Phase G's Tasks lifecycle is therefore modeled at the gateway/domain
+ * layer instead (apps/gateway/src/routes.ts): a task-shaped tool result
+ * (`{taskId, status}`) drives Execution status + round persistence, and
+ * "polling"/"cancelling" is an ordinary follow-up `tools/call` carrying
+ * the taskId back to the same demo tool — not a raw `tasks/get` RPC.
+ * Revisit if/when `@modelcontextprotocol/ext-tasks` (or a modern-era
+ * Tasks vocabulary) ships.
  */
 export const TASKS_EXTENSION_KEY = "io.modelcontextprotocol/tasks" as const;
 

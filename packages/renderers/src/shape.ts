@@ -63,3 +63,19 @@ export function safeSample(input: unknown, maxLen = 200): string | undefined {
     return undefined;
   }
 }
+
+// ---- Paged rendering helpers (Phase F slice 2) ----
+
+/** Slice [offset, offset+limit) out of an already in-memory array + hasMore lookahead. */
+export function pageArray<T>(arr: readonly T[], offset: number, limit: number): { page: T[]; hasMore: boolean } {
+  const safeOffset = Math.max(0, offset);
+  const safeLimit = Math.max(0, limit);
+  const page = arr.slice(safeOffset, safeOffset + safeLimit);
+  return { page, hasMore: safeOffset + page.length < arr.length };
+}
+
+/** Same as pageArray but over a text blob's "\n"-delimited lines. */
+export function pageLines(text: string, offset: number, limit: number): { page: string[]; hasMore: boolean } {
+  const lines = text.length === 0 ? [] : text.split("\n");
+  return pageArray(lines, offset, limit);
+}

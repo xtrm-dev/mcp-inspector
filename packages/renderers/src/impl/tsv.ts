@@ -1,5 +1,5 @@
-import type { RenderResult } from "../types";
-import { cellToText, deriveColumns, errMsg, isFlatObjectArray, safeSample, toRows } from "../shape";
+import type { RenderPageResult, RenderResult } from "../types";
+import { cellToText, deriveColumns, errMsg, isFlatObjectArray, pageArray, safeSample, toRows } from "../shape";
 
 const KIND = "tsv" as const;
 
@@ -31,4 +31,19 @@ export function renderTsv(input: unknown): RenderResult {
 
 function escapeTsv(field: string): string {
   return field.replace(/\\/g, "\\\\").replace(/\t/g, "\\t").replace(/\r?\n/g, "\\n");
+}
+
+export function renderTsvPage(input: unknown, offset: number, limit: number): RenderPageResult {
+  if (!isFlatObjectArray(input)) {
+    return { ok: false, kind: KIND, reason: "input is not a non-empty array of flat (scalar-valued) objects" };
+  }
+  try {
+    const columns = deriveColumns(input);
+    const { page, hasMore } = pageArray(input, offset, limit);
+    const rows = toRows(page, columns);
+    const lines = rows.map((row) => row.map((v) => escapeTsv(cellToText(v))).join("\t"));
+    return { ok: true, kind: KIND, lines, rows, columns, offset, limit, hasMore };
+  } catch (err) {
+    return { ok: false, kind: KIND, reason: errMsg(err) };
+  }
 }

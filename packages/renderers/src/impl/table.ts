@@ -1,5 +1,5 @@
-import type { RenderResult } from "../types";
-import { cellToText, deriveColumns, errMsg, isFlatObjectArray, safeSample, toRows } from "../shape";
+import type { RenderPageResult, RenderResult } from "../types";
+import { cellToText, deriveColumns, errMsg, isFlatObjectArray, pageArray, safeSample, toRows } from "../shape";
 
 const KIND = "table" as const;
 
@@ -28,4 +28,21 @@ function toMarkdownTable(columns: string[], rows: unknown[][]): string {
   const sep = `| ${columns.map(() => "---").join(" | ")} |`;
   const body = rows.map((row) => `| ${row.map((v) => cellToText(v).replace(/\|/g, "\\|")).join(" | ")} |`).join("\n");
   return [header, sep, body].join("\n");
+}
+
+// Row cursor: markdown header/separator lines are not repeated per page —
+// this emits one `| ... |` line per row in [offset, offset+limit).
+export function renderTablePage(input: unknown, offset: number, limit: number): RenderPageResult {
+  if (!isFlatObjectArray(input)) {
+    return { ok: false, kind: KIND, reason: "input is not a non-empty array of flat (scalar-valued) objects" };
+  }
+  try {
+    const columns = deriveColumns(input);
+    const { page, hasMore } = pageArray(input, offset, limit);
+    const rows = toRows(page, columns);
+    const lines = rows.map((row) => `| ${row.map((v) => cellToText(v).replace(/\|/g, "\\|")).join(" | ")} |`);
+    return { ok: true, kind: KIND, lines, rows, columns, offset, limit, hasMore };
+  } catch (err) {
+    return { ok: false, kind: KIND, reason: errMsg(err) };
+  }
 }

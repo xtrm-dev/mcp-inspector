@@ -1,12 +1,8 @@
-import { connect as netConnect, type Socket } from "node:net";
 import {
   Client,
   StreamableHTTPClientTransport,
-  ReadBuffer,
-  serializeMessage,
   isInputRequiredResult,
   type Transport,
-  type JSONRPCMessage,
 } from "@modelcontextprotocol/client";
 import {
   MODERN_PROTOCOL_VERSION,
@@ -32,68 +28,6 @@ interface Session {
 }
 
 const CLIENT_INFO = { name: "mcp-inspector-x", version: "0.0.0" } as const;
-
-/**
- * Transport over a Unix domain socket already opened by the privileged
- * runner (see ADR-0003 — the runner spawns stdio MCP children, never the
- * gateway). Frames one JSON-RPC message per line using the SDK's own
- * ReadBuffer/serializeMessage helpers (the same framing StdioClientTransport
- * uses), so the runner's raw byte pump needs no protocol awareness.
- */
-class UdsLineTransport implements Transport {
-  private socket: Socket | undefined;
-  private readonly readBuffer = new ReadBuffer();
-  onclose?: (() => void) | undefined;
-  onerror?: ((error: Error) => void) | undefined;
-  onmessage?: ((message: JSONRPCMessage) => void) | undefined;
-
-  constructor(private readonly socketPath: string) {}
-
-  async start(): Promise<void> {
-    if (this.socket) throw new Error("UdsLineTransport already started");
-    this.socket = await new Promise<Socket>((resolve, reject) => {
-      const s = netConnect(this.socketPath);
-      const onErr = (err: Error) => {
-        s.off("connect", onOk);
-        reject(err);
-      };
-      const onOk = () => {
-        s.off("error", onErr);
-        resolve(s);
-      };
-      s.once("error", onErr);
-      s.once("connect", onOk);
-    });
-    this.socket.on("data", (chunk: Buffer) => {
-      this.readBuffer.append(chunk);
-      for (;;) {
-        let message: JSONRPCMessage | null;
-        try {
-          message = this.readBuffer.readMessage();
-        } catch (err) {
-          this.onerror?.(err instanceof Error ? err : new Error(String(err)));
-          return;
-        }
-        if (message === null) break;
-        this.onmessage?.(message);
-      }
-    });
-    this.socket.on("close", () => this.onclose?.());
-    this.socket.on("error", (err: Error) => this.onerror?.(err));
-  }
-
-  async send(message: JSONRPCMessage): Promise<void> {
-    const socket = this.socket;
-    if (!socket) throw new Error("UdsLineTransport: send() before start()");
-    await new Promise<void>((resolve, reject) => {
-      socket.write(serializeMessage(message), (err) => (err ? reject(err) : resolve()));
-    });
-  }
-
-  async close(): Promise<void> {
-    this.socket?.end();
-  }
-}
 
 /**
  * Live @modelcontextprotocol/client v2 implementation of McpClientAdapter.
@@ -145,6 +79,10 @@ export function createSdkAdapter(): McpClientAdapter {
             `sdk-adapter: stdio descriptor '${descriptor.id}' requires 'socketPath' (spawn via runner.spawnStdioMcp first)`,
           );
         }
+        // Dynamic import keeps `node:net` out of apps/web's bundle — the
+        // stdio branch is unreachable in the browser (browser never opens a
+        // UDS descriptor) so this module is never loaded there.
+        const { UdsLineTransport } = await import("./sdk-adapter-uds");
         transport = new UdsLineTransport(descriptor.socketPath);
       }
 

@@ -11,8 +11,10 @@
     "packages/*"
   ],
   "scripts": {
+    "dev": "node scripts/dev.mjs",
     "dev:web": "npm run dev --workspace @mcp-inspector-x/web",
     "dev:gateway": "npm run dev --workspace @mcp-inspector-x/gateway",
+    "dev:runner": "npm run dev --workspace @mcp-inspector-x/runner",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run",

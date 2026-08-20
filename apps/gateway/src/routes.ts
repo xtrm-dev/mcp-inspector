@@ -7,7 +7,13 @@ import {
   type JsonObject,
   type McpClientAdapter,
 } from "@mcp-inspector-x/protocol";
-import type { Storage, EventRow, UpsertServerInput } from "@mcp-inspector-x/storage";
+import type {
+  Storage,
+  EventRow,
+  UpsertServerInput,
+  ExecutionRecord,
+  TraceLink,
+} from "@mcp-inspector-x/storage";
 import { createRendererRegistry, renderInlineMaxBytes, type RendererKind, type RenderPageResult } from "@mcp-inspector-x/renderers";
 import {
   isRequest,
@@ -28,7 +34,7 @@ import type { ServerManager } from "./servers";
 import type { SecretsRegistry } from "./secrets";
 import { compareExecutions } from "./compare";
 import { buildPacket, renderPacketMarkdown } from "./packets";
-import { runWorkspace, MAX_CONCURRENCY } from "./executor";
+import { runWorkspace, MAX_CONCURRENCY, parseTraceparent } from "./executor";
 import { randomUUID } from "node:crypto";
 
 export type { ServerBinding } from "./servers";
@@ -192,6 +198,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         traceIngestV1: true,
         sourceRevisionsV1: true,
         capabilitySourceMappingV1: true,
+        traceCorrelationV1: true,
       },
     }),
   );
@@ -672,7 +679,12 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     }
 
     const capabilityId = `${id}::tool::${name}`;
-    const execution = deps.storage.executions.create({ serverId: id, capabilityId });
+    const parsedTp = parseTraceparent(c.req.header("traceparent"));
+    const execution = deps.storage.executions.create({
+      serverId: id,
+      capabilityId,
+      ...(parsedTp ? { traceId: parsedTp.traceId } : {}),
+    });
     deps.storage.events.append({
       executionId: execution.id,
       kind: "execution.created",
@@ -1274,9 +1286,6 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     if (!Array.isArray(body.spans)) {
       return c.json({ error: "'spans' (array) required" }, 400);
     }
-    // Bounded upload: a runaway agent shouldn't be able to stuff MBs of spans
-    // into a single trace record. 10k spans is generous for any realistic
-    // agent hop-chain and prevents pathological memory use.
     if (body.spans.length > 10_000) {
       return c.json({ error: "trace exceeds bounded default of 10,000 spans" }, 400);
     }
@@ -1284,13 +1293,93 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       traceId: body.traceId,
       spans: body.spans,
     };
-    if (typeof body.source === "string") putInput.source = body.source;
+    // `source` is either the legacy free-text string (Phase M slice 1) or a
+    // structured { executionId | agentRunId } that drives auto-linking
+    // (Phase L slice 2). Either way it's preserved on the trace row.
+    let linkExecutionId: string | undefined;
+    let linkAgentRunId: string | undefined;
+    if (typeof body.source === "string") {
+      putInput.source = body.source;
+    } else if (body.source && typeof body.source === "object" && !Array.isArray(body.source)) {
+      const src = body.source as { executionId?: unknown; agentRunId?: unknown };
+      if (typeof src.executionId === "string" && src.executionId.length > 0) {
+        linkExecutionId = src.executionId;
+      }
+      if (typeof src.agentRunId === "string" && src.agentRunId.length > 0) {
+        linkAgentRunId = src.agentRunId;
+      }
+      putInput.source = JSON.stringify(body.source);
+    }
     const record = deps.storage.traces.put(putInput);
+
+    if (linkExecutionId) {
+      deps.storage.traces.linkExecution({
+        traceId: record.traceId,
+        executionId: linkExecutionId,
+        kind: "w3c-trace",
+        confidence: 1.0,
+      });
+    }
+    if (linkAgentRunId) {
+      deps.storage.traces.linkAgentRun({
+        traceId: record.traceId,
+        agentRunId: linkAgentRunId,
+        kind: "w3c-trace",
+        confidence: 1.0,
+      });
+    }
+    // Late-link: any Execution already stashed with this traceId from a
+    // traceparent header seen before this trace was ingested.
+    for (const exec of deps.storage.executions.listByTraceId(record.traceId)) {
+      deps.storage.traces.linkExecution({
+        traceId: record.traceId,
+        executionId: exec.id,
+        kind: "w3c-trace",
+        confidence: 1.0,
+      });
+    }
+
     deps.storage.events.append({
       kind: "trace.ingested",
       payload: { traceId: record.traceId, spanCount: record.spanCount, source: record.source },
     });
     return c.json({ trace: record }, 201);
+  });
+
+  // ---- Trace correlation reads (Phase L slice 2) ----
+
+  app.get("/api/v1/executions/:id/traces", (c) => {
+    const id = c.req.param("id");
+    const execution = deps.storage.executions.get(id);
+    if (!execution) return c.json({ error: `unknown execution '${id}'` }, 404);
+    const links = deps.storage.traces.listForExecution(id);
+    return c.json({
+      traces: links.map((l) => ({
+        trace: l.trace,
+        correlationKind: l.correlationKind,
+        confidence: l.correlationConfidence,
+      })),
+      ...(links.length === 0 ? { _note: "no correlated traces found for this execution" } : {}),
+    });
+  });
+
+  app.get("/api/v1/agent-runs/:id/timeline", (c) => {
+    const id = c.req.param("id");
+    const agentRun = deps.storage.agentRuns.get(id);
+    if (!agentRun) return c.json({ error: `unknown agent_run '${id}'` }, 404);
+    const executions = deps.storage.executions.listForAgentRun(id);
+    const traceLinks = deps.storage.traces.listForAgentRun(id);
+    const traces = traceLinks.map((l) => ({ trace: l.trace, spans: l.trace.spans }));
+    const overlay = buildAgentRunOverlay(executions, traceLinks);
+    return c.json({
+      agentRun,
+      executions,
+      traces,
+      overlay,
+      ...(traceLinks.length === 0
+        ? { _note: "no correlated traces found for this agent_run" }
+        : {}),
+    });
   });
 
   app.get("/api/v1/traces", (c) => {
@@ -1572,4 +1661,61 @@ export function buildRenderSurface(value: unknown, artifacts: Storage["artifacts
   const rec = artifacts.put({ bytes, mediaType });
   const preview = rendererRegistry.renderPage(value, { kind, offset: 0, limit: RENDER_PREVIEW_LIMIT });
   return { spilled: true, kind, artifactRef: rec.hash, preview };
+}
+
+// ---- Agent-run timeline overlay (Phase L slice 2) ----
+
+type OverlayEntry =
+  | { at: string; kind: "execution"; ref: { id: string; status: string; capabilityId: string; serverId: string } }
+  | { at: string; kind: "span"; ref: { id: string; traceId: string; name?: string } };
+
+interface SpanLike {
+  spanId?: string;
+  name?: string;
+  startTimeUnixNano?: string | number;
+}
+
+function asSpanLike(value: unknown): SpanLike {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as SpanLike;
+  }
+  return {};
+}
+
+function spanStartIso(span: SpanLike, fallbackIso: string): string {
+  const raw = span.startTimeUnixNano;
+  if (raw === undefined) return fallbackIso;
+  try {
+    const nanos = typeof raw === "number" ? BigInt(Math.trunc(raw)) : BigInt(raw);
+    const millis = Number(nanos / 1_000_000n);
+    if (!Number.isFinite(millis)) return fallbackIso;
+    return new Date(millis).toISOString();
+  } catch {
+    return fallbackIso;
+  }
+}
+
+function buildAgentRunOverlay(executions: ExecutionRecord[], traceLinks: TraceLink[]): OverlayEntry[] {
+  const overlay: OverlayEntry[] = [];
+  for (const exec of executions) {
+    overlay.push({
+      at: exec.startedAt,
+      kind: "execution",
+      ref: { id: exec.id, status: exec.status, capabilityId: exec.capabilityId, serverId: exec.serverId },
+    });
+  }
+  for (const { trace } of traceLinks) {
+    const spans = Array.isArray(trace.spans) ? trace.spans : [];
+    spans.forEach((raw, idx) => {
+      const span = asSpanLike(raw);
+      const ref: { id: string; traceId: string; name?: string } = {
+        id: span.spanId ?? `${trace.traceId}:${idx}`,
+        traceId: trace.traceId,
+      };
+      if (span.name !== undefined) ref.name = span.name;
+      overlay.push({ at: spanStartIso(span, trace.ingestedAt), kind: "span", ref });
+    });
+  }
+  overlay.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  return overlay;
 }

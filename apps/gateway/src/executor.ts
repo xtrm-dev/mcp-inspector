@@ -13,6 +13,41 @@ const INLINE_RESULT_LIMIT = 16 * 1024;
 export const MAX_CONCURRENCY = 8;
 export const DEFAULT_CONCURRENCY = 4;
 
+// ---- W3C traceparent parsing (Phase L slice 2) ----
+//
+// Format: "<version>-<trace-id>-<parent-id>-<trace-flags>", each field
+// lowercase hex, '-' separated. https://www.w3.org/TR/trace-context/
+// Malformed input is never an error for the caller: this returns null and
+// the caller silently proceeds without a traceId (ADR-0002).
+const TRACEPARENT_RE =
+  /^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/;
+const ALL_ZERO_TRACE_ID = "0".repeat(32);
+const ALL_ZERO_SPAN_ID = "0".repeat(16);
+
+export interface ParsedTraceparent {
+  version: string;
+  traceId: string;
+  spanId: string;
+  flags: string;
+}
+
+export function parseTraceparent(header: string | null | undefined): ParsedTraceparent | null {
+  if (!header) return null;
+  try {
+    const trimmed = header.trim();
+    if (!TRACEPARENT_RE.test(trimmed)) return null;
+    const parts = trimmed.split("-");
+    const version = parts[0]!;
+    const traceId = parts[1]!;
+    const spanId = parts[2]!;
+    const flags = parts[3]!;
+    if (traceId === ALL_ZERO_TRACE_ID || spanId === ALL_ZERO_SPAN_ID) return null;
+    return { version, traceId, spanId, flags };
+  } catch {
+    return null;
+  }
+}
+
 export interface ExecutorDeps {
   adapter: McpClientAdapter;
   storage: Storage;

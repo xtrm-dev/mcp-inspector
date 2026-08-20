@@ -530,6 +530,10 @@ export interface ExecutionRecord {
   status: string;
   startedAt: Iso;
   endedAt: Iso | null;
+  // Phase L slice 2: traceId stashed at creation time (from an inbound W3C
+  // traceparent) so a trace ingested later can late-link back. Surfaced as
+  // `metadata` rather than a bare column per the read-side contract.
+  metadata: unknown;
 }
 
 export interface CreateExecutionInput {
@@ -541,6 +545,7 @@ export interface CreateExecutionInput {
   serverId: string;
   capabilityId: string;
   status?: string;
+  traceId?: string | null;
 }
 
 interface ExecutionRow {
@@ -549,6 +554,7 @@ interface ExecutionRow {
   workspace_node_id: string | null;
   capture_session_id: string | null;
   agent_run_id: string | null;
+  trace_id: string | null;
   server_id: string;
   capability_id: string;
   status: string;
@@ -568,6 +574,7 @@ function rowToExecution(row: ExecutionRow): ExecutionRecord {
     status: row.status,
     startedAt: row.started_at,
     endedAt: row.ended_at,
+    metadata: row.trace_id ? { traceId: row.trace_id } : null,
   };
 }
 
@@ -578,15 +585,16 @@ export interface ExecutionRepository {
   listForCapability(capabilityId: string, opts?: { limit?: number }): ExecutionRecord[];
   listForAgentRun(agentRunId: string, opts?: { limit?: number }): ExecutionRecord[];
   listForCaptureSession(captureSessionId: string, opts?: { limit?: number }): ExecutionRecord[];
+  listByTraceId(traceId: string): ExecutionRecord[];
   updateStatus(id: string, status: string, endedAt?: Iso | null): ExecutionRecord;
 }
 
 export function createExecutionRepository(db: SqliteDb): ExecutionRepository {
   const insert = db.prepare(`
     INSERT INTO execution
-      (id, workspace_id, workspace_node_id, capture_session_id, agent_run_id,
+      (id, workspace_id, workspace_node_id, capture_session_id, agent_run_id, trace_id,
        server_id, capability_id, status, started_at, ended_at)
-    VALUES (@id, @workspace_id, @workspace_node_id, @capture_session_id, @agent_run_id,
+    VALUES (@id, @workspace_id, @workspace_node_id, @capture_session_id, @agent_run_id, @trace_id,
             @server_id, @capability_id, @status, @started_at, @ended_at)
   `);
   const getStmt = db.prepare("SELECT * FROM execution WHERE id = ?");
@@ -599,6 +607,9 @@ export function createExecutionRepository(db: SqliteDb): ExecutionRepository {
   );
   const listCaptureStmt = db.prepare(
     "SELECT * FROM execution WHERE capture_session_id = ? ORDER BY started_at ASC LIMIT ?",
+  );
+  const listTraceStmt = db.prepare(
+    "SELECT * FROM execution WHERE trace_id = ? ORDER BY started_at ASC",
   );
   const updateStmt = db.prepare(
     "UPDATE execution SET status = @status, ended_at = @ended_at WHERE id = @id",
@@ -613,6 +624,7 @@ export function createExecutionRepository(db: SqliteDb): ExecutionRepository {
         workspace_node_id: input.workspaceNodeId ?? null,
         capture_session_id: input.captureSessionId ?? null,
         agent_run_id: input.agentRunId ?? null,
+        trace_id: input.traceId ?? null,
         server_id: input.serverId,
         capability_id: input.capabilityId,
         status: input.status ?? "queued",
@@ -640,6 +652,10 @@ export function createExecutionRepository(db: SqliteDb): ExecutionRepository {
     },
     listForCaptureSession(captureSessionId, opts) {
       const rows = listCaptureStmt.all(captureSessionId, opts?.limit ?? 1000) as ExecutionRow[];
+      return rows.map(rowToExecution);
+    },
+    listByTraceId(traceId) {
+      const rows = listTraceStmt.all(traceId) as ExecutionRow[];
       return rows.map(rowToExecution);
     },
     updateStatus(id, status, endedAt) {
@@ -1059,11 +1075,72 @@ function rowToTrace(row: TraceRow): TraceRecord {
   };
 }
 
+export type SubjectKind = "execution" | "agent_run";
+
+export interface TraceCorrelation {
+  traceId: string;
+  subjectKind: SubjectKind;
+  subjectId: string;
+  correlationKind: CorrelationKind;
+  correlationConfidence: number;
+  linkedAt: Iso;
+}
+
+export interface LinkExecutionInput {
+  traceId: string;
+  executionId: string;
+  kind: CorrelationKind;
+  confidence: number;
+}
+
+export interface LinkAgentRunInput {
+  traceId: string;
+  agentRunId: string;
+  kind: CorrelationKind;
+  confidence: number;
+}
+
+export interface TraceLink {
+  trace: TraceRecord;
+  correlationKind: CorrelationKind;
+  correlationConfidence: number;
+}
+
+interface TraceCorrelationRow {
+  trace_id: string;
+  subject_kind: string;
+  subject_id: string;
+  correlation_kind: string;
+  correlation_confidence: number;
+  linked_at: string;
+}
+
+function earliestSpanNanos(spans: unknown): bigint | null {
+  if (!Array.isArray(spans)) return null;
+  let min: bigint | null = null;
+  for (const raw of spans) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const value = (raw as { startTimeUnixNano?: unknown }).startTimeUnixNano;
+    if (typeof value !== "string" && typeof value !== "number") continue;
+    try {
+      const n = typeof value === "number" ? BigInt(Math.trunc(value)) : BigInt(value);
+      if (min === null || n < min) min = n;
+    } catch {
+      // non-numeric span timestamp — ignore for ordering purposes
+    }
+  }
+  return min;
+}
+
 export interface TraceRepository {
   put(input: PutTraceInput): TraceRecord;
   get(traceId: string): TraceRecord | null;
   list(opts?: { limit?: number }): TraceRecord[];
   delete(traceId: string): void;
+  linkExecution(input: LinkExecutionInput): TraceCorrelation;
+  linkAgentRun(input: LinkAgentRunInput): TraceCorrelation;
+  listForExecution(executionId: string): TraceLink[];
+  listForAgentRun(agentRunId: string): TraceLink[];
 }
 
 export function createTraceRepository(db: SqliteDb): TraceRepository {
@@ -1079,6 +1156,67 @@ export function createTraceRepository(db: SqliteDb): TraceRepository {
   const getStmt = db.prepare("SELECT * FROM trace WHERE trace_id = ?");
   const listStmt = db.prepare("SELECT * FROM trace ORDER BY ingested_at DESC LIMIT ?");
   const delStmt = db.prepare("DELETE FROM trace WHERE trace_id = ?");
+
+  const linkStmt = db.prepare(`
+    INSERT INTO trace_correlation
+      (trace_id, subject_kind, subject_id, correlation_kind, correlation_confidence, linked_at)
+    VALUES (@trace_id, @subject_kind, @subject_id, @correlation_kind, @correlation_confidence, @linked_at)
+    ON CONFLICT(trace_id, subject_kind, subject_id) DO UPDATE SET
+      correlation_kind       = excluded.correlation_kind,
+      correlation_confidence = excluded.correlation_confidence,
+      linked_at              = excluded.linked_at
+  `);
+  const getLinkStmt = db.prepare(
+    "SELECT * FROM trace_correlation WHERE trace_id = ? AND subject_kind = ? AND subject_id = ?",
+  );
+  const listForSubjectStmt = db.prepare(
+    "SELECT * FROM trace_correlation WHERE subject_kind = ? AND subject_id = ? ORDER BY linked_at ASC",
+  );
+
+  function rowToCorrelation(row: TraceCorrelationRow): TraceCorrelation {
+    return {
+      traceId: row.trace_id,
+      subjectKind: row.subject_kind as SubjectKind,
+      subjectId: row.subject_id,
+      correlationKind: row.correlation_kind as CorrelationKind,
+      correlationConfidence: row.correlation_confidence,
+      linkedAt: row.linked_at,
+    };
+  }
+
+  function link(
+    traceId: string,
+    subjectKind: SubjectKind,
+    subjectId: string,
+    kind: CorrelationKind,
+    confidence: number,
+  ): TraceCorrelation {
+    linkStmt.run({
+      trace_id: traceId,
+      subject_kind: subjectKind,
+      subject_id: subjectId,
+      correlation_kind: kind,
+      correlation_confidence: confidence,
+      linked_at: nowIso(),
+    });
+    const row = getLinkStmt.get(traceId, subjectKind, subjectId) as TraceCorrelationRow;
+    return rowToCorrelation(row);
+  }
+
+  function listLinks(subjectKind: SubjectKind, subjectId: string): TraceLink[] {
+    const rows = listForSubjectStmt.all(subjectKind, subjectId) as TraceCorrelationRow[];
+    const links: TraceLink[] = [];
+    for (const row of rows) {
+      const traceRow = getStmt.get(row.trace_id) as TraceRow | undefined;
+      if (!traceRow) continue;
+      links.push({
+        trace: rowToTrace(traceRow),
+        correlationKind: row.correlation_kind as CorrelationKind,
+        correlationConfidence: row.correlation_confidence,
+      });
+    }
+    return links;
+  }
 
   return {
     put(input) {
@@ -1104,6 +1242,28 @@ export function createTraceRepository(db: SqliteDb): TraceRepository {
     },
     delete(traceId) {
       delStmt.run(traceId);
+    },
+    linkExecution(input) {
+      return link(input.traceId, "execution", input.executionId, input.kind, input.confidence);
+    },
+    linkAgentRun(input) {
+      return link(input.traceId, "agent_run", input.agentRunId, input.kind, input.confidence);
+    },
+    listForExecution(executionId) {
+      return listLinks("execution", executionId);
+    },
+    listForAgentRun(agentRunId) {
+      const links = listLinks("agent_run", agentRunId);
+      return links.sort((a, b) => {
+        const an = earliestSpanNanos(a.trace.spans);
+        const bn = earliestSpanNanos(b.trace.spans);
+        if (an === null && bn === null) {
+          return a.trace.ingestedAt < b.trace.ingestedAt ? -1 : 1;
+        }
+        if (an === null) return 1;
+        if (bn === null) return -1;
+        return an < bn ? -1 : an > bn ? 1 : 0;
+      });
     },
   };
 }

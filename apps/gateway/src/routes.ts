@@ -12,7 +12,19 @@ import type { ServerManager } from "./servers";
 import type { SecretsRegistry } from "./secrets";
 import { compareExecutions } from "./compare";
 import { buildPacket, renderPacketMarkdown } from "./packets";
-import { runWorkspace, MAX_CONCURRENCY } from "./executor";
+import {
+  runWorkspace,
+  MAX_CONCURRENCY,
+  cancelExecution,
+  isInFlight,
+  executeTool,
+  executeResourceRead,
+  executeGetPrompt,
+  parseCapabilityId,
+  parseArgs,
+  type ExecuteResult,
+  type ExecuteGetPromptInput,
+} from "./executor";
 import { randomUUID } from "node:crypto";
 
 export type { ServerBinding } from "./servers";
@@ -551,100 +563,23 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       // fallthrough — treat as empty args
     }
 
-    const capabilityId = `${id}::tool::${name}`;
-    const execution = deps.storage.executions.create({ serverId: id, capabilityId });
-    deps.storage.events.append({
-      executionId: execution.id,
-      kind: "execution.created",
-      payload: { serverId: id, capabilityId, name, arguments: args },
-    });
-
-    const startedAt = new Date();
-    try {
-      const { value, evidence } = await deps.adapter.callTool({
-        serverId: id,
-        name,
-        arguments: args as Parameters<McpClientAdapter["callTool"]>[0]["arguments"],
-      });
-      const endedAt = new Date();
-
-      const resultJson = JSON.stringify(value ?? null);
-      const inlineResult = resultJson.length <= INLINE_RESULT_LIMIT ? resultJson : null;
-      let resultArtifact: string | null = null;
-      if (inlineResult === null) {
-        const rec = deps.storage.artifacts.put({
-          bytes: new TextEncoder().encode(resultJson),
-          mediaType: "application/json",
-        });
-        resultArtifact = rec.hash;
-      }
-
-      const evidenceBlob = deps.storage.artifacts.put({
-        bytes: new TextEncoder().encode(JSON.stringify(evidence)),
-        mediaType: "application/json",
-      });
-      const evidenceRow = deps.storage.evidence.append({
-        executionId: execution.id,
-        kind: "raw_response",
-        artifactRef: evidenceBlob.hash,
-      });
-
-      const round = deps.storage.rounds.append({
-        executionId: execution.id,
-        roundIndex: 0,
-        kind: "initial",
-        argumentsJson: JSON.stringify(args),
-        resultInlineJson: inlineResult,
-        resultArtifact,
-        durationMs: endedAt.getTime() - startedAt.getTime(),
-        startedAt: startedAt.toISOString(),
-        endedAt: endedAt.toISOString(),
-      });
-      const done = deps.storage.executions.updateStatus(
-        execution.id,
-        "complete",
-        endedAt.toISOString(),
-      );
-      deps.storage.events.append({
-        executionId: execution.id,
-        kind: "execution.complete",
-        payload: {
-          serverId: id,
-          capabilityId,
-          durationMs: round.durationMs,
-          evidenceRefs: [evidenceRow.id],
-          resultInline: inlineResult !== null,
-          resultArtifact,
-        },
-      });
-
-      return c.json({
-        executionId: done.id,
-        value,
-        evidence,
-        evidenceRefs: [{ id: evidenceRow.id, kind: evidenceRow.kind, artifactRef: evidenceRow.artifactRef }],
-      });
-    } catch (err) {
-      const endedAt = new Date();
-      const message = errMsg(err);
-      deps.storage.rounds.append({
-        executionId: execution.id,
-        roundIndex: 0,
-        kind: "initial",
-        argumentsJson: JSON.stringify(args),
-        errorJson: JSON.stringify({ message }),
-        durationMs: endedAt.getTime() - startedAt.getTime(),
-        startedAt: startedAt.toISOString(),
-        endedAt: endedAt.toISOString(),
-      });
-      deps.storage.executions.updateStatus(execution.id, "failed", endedAt.toISOString());
-      deps.storage.events.append({
-        executionId: execution.id,
-        kind: "execution.failed",
-        payload: { serverId: id, capabilityId, error: message },
-      });
-      return c.json({ executionId: execution.id, error: message }, 502);
+    // Delegate to the same executeTool() helper runWorkspace uses (executor.ts)
+    // so this route gets Execution/Round/Evidence capture and cancellation
+    // registration (POST /executions/:id/cancel) for free instead of a second
+    // hand-rolled copy of the dispatch logic.
+    const result = await executeTool(
+      { adapter: deps.adapter, storage: deps.storage, serverManager: deps.serverManager },
+      { serverId: id, name, arguments: args },
+    );
+    if (!result.ok) {
+      return c.json({ executionId: result.executionId, error: result.error }, 502);
     }
+    return c.json({
+      executionId: result.executionId,
+      value: result.value,
+      evidence: result.evidence,
+      evidenceRefs: result.evidenceRefs,
+    });
   });
 
   // ---- /api/v1/workspaces* — persistent workspace + nodes ----
@@ -770,11 +705,24 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     const runInput: Parameters<typeof runWorkspace>[1] = { workspaceId: id, runId };
     if (parse.data.nodeIds !== undefined) runInput.nodeIds = parse.data.nodeIds;
     if (parse.data.concurrency !== undefined) runInput.concurrency = parse.data.concurrency;
-    const result = await runWorkspace(
-      { adapter: deps.adapter, storage: deps.storage, serverManager: deps.serverManager },
-      runInput,
-    );
-    return c.json(result);
+
+    // Per-run AbortController so cancel reaches every in-flight child node
+    // (each tool node also registers its own controller under its own
+    // Execution id for POST /executions/:id/cancel — this one is the
+    // umbrella that fires if the HTTP client itself disconnects mid-run).
+    const runController = new AbortController();
+    const onClientAbort = (): void => runController.abort("client-disconnected");
+    c.req.raw.signal.addEventListener("abort", onClientAbort);
+    runInput.signal = runController.signal;
+    try {
+      const result = await runWorkspace(
+        { adapter: deps.adapter, storage: deps.storage, serverManager: deps.serverManager },
+        runInput,
+      );
+      return c.json(result);
+    } finally {
+      c.req.raw.signal.removeEventListener("abort", onClientAbort);
+    }
   });
 
   app.post("/api/v1/workspaces/:id/nodes/reorder", async (c) => {
@@ -1044,6 +992,73 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     const rounds = deps.storage.rounds.listForExecution(id);
     const evidence = deps.storage.evidence.listForExecution(id);
     return c.json({ execution: record, rounds, evidence });
+  });
+
+  // Sends an AbortSignal to the in-flight tool call for this Execution.
+  // The call's own catch handler (executor.ts) does the actual status/round
+  // transition once the SDK's request() promise rejects with AbortError —
+  // this route only requests it and returns immediately, it does not wait
+  // for the transition to land.
+  app.post("/api/v1/executions/:id/cancel", (c) => {
+    const id = c.req.param("id");
+    const record = deps.storage.executions.get(id);
+    if (!record) return c.json({ error: `unknown execution '${id}'` }, 404);
+    if (!isInFlight(id)) {
+      return c.json({ error: `execution '${id}' is not in flight` }, 409);
+    }
+    cancelExecution(id, "user");
+    return c.json({ executionId: id, cancelling: true });
+  });
+
+  // Creates a new Execution against the same server/capability with
+  // identical arguments (from the source Execution's last round), linked
+  // back via metadata.retriedFrom. Does not rerun/replay the source
+  // Execution's history — this is a fresh call.
+  app.post("/api/v1/executions/:id/retry", async (c) => {
+    const id = c.req.param("id");
+    const source = deps.storage.executions.get(id);
+    if (!source) return c.json({ error: `unknown execution '${id}'` }, 404);
+    if (!deps.serverManager.getBinding(source.serverId)) {
+      return c.json({ error: `server '${source.serverId}' not connected` }, 409);
+    }
+    const rounds = deps.storage.rounds.listForExecution(id);
+    const lastRound = rounds[rounds.length - 1];
+    if (!lastRound) {
+      return c.json({ error: `execution '${id}' has no rounds to retry` }, 409);
+    }
+    const parsed = parseCapabilityId(source.capabilityId);
+    if (!parsed) {
+      return c.json({ error: `execution '${id}' has an unparseable capabilityId` }, 409);
+    }
+    const args = parseArgs(lastRound.argumentsJson);
+    const execDeps = { adapter: deps.adapter, storage: deps.storage, serverManager: deps.serverManager };
+    const metadata = { retriedFrom: id };
+
+    let result: ExecuteResult;
+    if (parsed.type === "tool") {
+      result = await executeTool(execDeps, {
+        serverId: parsed.serverId,
+        name: parsed.name,
+        arguments: args,
+        metadata,
+      });
+    } else if (parsed.type === "resource") {
+      result = await executeResourceRead(execDeps, { serverId: parsed.serverId, uri: parsed.name, metadata });
+    } else if (parsed.type === "prompt") {
+      const promptInput: ExecuteGetPromptInput = { serverId: parsed.serverId, name: parsed.name, metadata };
+      if (Object.keys(args).length > 0) promptInput.arguments = args;
+      result = await executeGetPrompt(execDeps, promptInput);
+    } else {
+      return c.json({ error: `unsupported capability type '${parsed.type}' for retry` }, 400);
+    }
+
+    return c.json({
+      executionId: result.executionId,
+      retriedFrom: id,
+      ok: result.ok,
+      value: result.value,
+      error: result.error,
+    });
   });
 
   // Resumable SSE stream of execution/evidence/lifecycle events.

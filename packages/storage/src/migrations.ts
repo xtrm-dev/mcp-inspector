@@ -220,12 +220,21 @@ ALTER TABLE server_definition ADD COLUMN cwd TEXT;
 ALTER TABLE server_definition ADD COLUMN env_json TEXT;
 `;
 
+// Phase E slice 2B: retry lineage. A retried Execution stores
+// { retriedFrom: <sourceExecutionId> } here so retry chains are walkable
+// without a join table — same JSON-metadata pattern as capture_session /
+// agent_run's metadata_json.
+const V6_EXECUTION_METADATA = `
+ALTER TABLE execution ADD COLUMN metadata_json TEXT;
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "schema-v1", sql: V1_SCHEMA },
   { version: 2, name: "agent-run-links", sql: V2_AGENT_RUN_LINKS },
   { version: 3, name: "traces", sql: V3_TRACES },
   { version: 4, name: "source-revision", sql: V4_SOURCE_REVISION },
   { version: 5, name: "stdio-server-fields", sql: V5_STDIO_SERVER_FIELDS },
+  { version: 6, name: "execution-metadata", sql: V6_EXECUTION_METADATA },
 ];
 
 export function checksum(sql: string): string {

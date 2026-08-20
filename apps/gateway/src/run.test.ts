@@ -115,10 +115,10 @@ describe("workspace Run Selected / Run All", () => {
     // Three tool nodes complete OK with an Execution id.
     const toolResults = body.nodes.filter((n) => toolNodeIds.includes(n.nodeId));
     expect(toolResults.every((n) => n.ok && n.executionId)).toBe(true);
-    // Prompt node is skipped in slice 2A (Phase E slice 2B adds resource/prompt dispatch).
+    // Prompt node dispatch lands with Phase E slice 2B.
     const promptResult = body.nodes.find((n) => n.nodeId === promptNodeId);
-    expect(promptResult?.ok).toBe(false);
-    expect(promptResult?.skippedReason).toContain("unsupported-type:prompt");
+    expect(promptResult?.ok).toBe(true);
+    expect(promptResult?.executionId).toBeTruthy();
     // Unbound node is explicitly skipped.
     const unbound = body.nodes.find((n) => n.nodeId === unboundNodeId);
     expect(unbound?.ok).toBe(false);

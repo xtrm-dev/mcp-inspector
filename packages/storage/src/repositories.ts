@@ -530,6 +530,10 @@ export interface ExecutionRecord {
   status: string;
   startedAt: Iso;
   endedAt: Iso | null;
+  // Retry lineage (Phase E slice 2B): { retriedFrom: <sourceExecutionId> }
+  // when this Execution was created by POST /executions/:id/retry; null
+  // for a first-run Execution.
+  metadata: unknown;
 }
 
 export interface CreateExecutionInput {
@@ -541,6 +545,7 @@ export interface CreateExecutionInput {
   serverId: string;
   capabilityId: string;
   status?: string;
+  metadata?: unknown;
 }
 
 interface ExecutionRow {
@@ -554,6 +559,7 @@ interface ExecutionRow {
   status: string;
   started_at: string;
   ended_at: string | null;
+  metadata_json: string | null;
 }
 
 function rowToExecution(row: ExecutionRow): ExecutionRecord {
@@ -568,6 +574,7 @@ function rowToExecution(row: ExecutionRow): ExecutionRecord {
     status: row.status,
     startedAt: row.started_at,
     endedAt: row.ended_at,
+    metadata: row.metadata_json ? JSON.parse(row.metadata_json) : null,
   };
 }
 
@@ -584,9 +591,9 @@ export function createExecutionRepository(db: SqliteDb): ExecutionRepository {
   const insert = db.prepare(`
     INSERT INTO execution
       (id, workspace_id, workspace_node_id, capture_session_id, agent_run_id,
-       server_id, capability_id, status, started_at, ended_at)
+       server_id, capability_id, status, started_at, ended_at, metadata_json)
     VALUES (@id, @workspace_id, @workspace_node_id, @capture_session_id, @agent_run_id,
-            @server_id, @capability_id, @status, @started_at, @ended_at)
+            @server_id, @capability_id, @status, @started_at, @ended_at, @metadata_json)
   `);
   const getStmt = db.prepare("SELECT * FROM execution WHERE id = ?");
   const listStmt = db.prepare("SELECT * FROM execution ORDER BY started_at DESC LIMIT ?");
@@ -614,6 +621,7 @@ export function createExecutionRepository(db: SqliteDb): ExecutionRepository {
         status: input.status ?? "queued",
         started_at: nowIso(),
         ended_at: null as string | null,
+        metadata_json: input.metadata === undefined ? null : JSON.stringify(input.metadata),
       };
       insert.run(row);
       return rowToExecution(row as ExecutionRow);

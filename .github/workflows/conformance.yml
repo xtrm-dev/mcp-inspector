@@ -29,13 +29,12 @@ jobs:
           node-version: '22.19.0'
       - name: Install
         run: npm install
-      - name: tools_call
-        run: >-
-          npx --package=@modelcontextprotocol/conformance@0.2.0-alpha.11 conformance client
-          --command "npx tsx apps/conformance-client/src/index.ts"
-          --scenario tools_call
-          --spec-version 2026-07-28
-          --timeout 15000
+      # scripts/conformance.mjs builds the package if dist-package/ is
+      # missing, then runs the required scenario against the bundled
+      # dist-package/stage/conformance-client.mjs — the packaged binary,
+      # not `tsx src/index.ts` — and writes conformance/evidence/.
+      - name: tools_call (packaged binary)
+        run: npm run conformance
 
   scoreboard:
     name: Conformance — full 2026-07-28 scoreboard (informational)
@@ -49,10 +48,12 @@ jobs:
           node-version: '22.19.0'
       - name: Install
         run: npm install
-      - name: Full requirements set
+      - name: Package
+        run: npm run package
+      - name: Full requirements set (packaged binary)
         run: >-
           npx --package=@modelcontextprotocol/conformance@0.2.0-alpha.11 conformance client
-          --command "npx tsx apps/conformance-client/src/index.ts"
+          --command "node dist-package/stage/conformance-client.mjs"
           --requirements 2026-07-28
           --timeout 15000
           --expected-failures apps/conformance-client/expected-failures.yml

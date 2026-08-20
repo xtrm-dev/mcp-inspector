@@ -1,6 +1,8 @@
 import { serve } from "@hono/node-server";
+import { serveStatic } from "@hono/node-server/serve-static";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { existsSync } from "node:fs";
 import {
   createSdkAdapter,
   type ProtocolNegotiation,
@@ -10,6 +12,22 @@ import { startDemoMcp, type DemoMcp } from "./demo-mcp";
 import { buildGatewayApp } from "./routes";
 import { createServerManager } from "./servers";
 import { createSecretsRegistry } from "./secrets";
+
+// Packaged builds ship the built web SPA as a sibling "web/" directory next
+// to the bundled gateway entry point (see scripts/package.mjs + bin.mjs).
+// Source/dev mode never sets this, so the dev workflow (Vite on :5174) is
+// unaffected — this is additive, packaged-only behavior.
+function mountWebAssets(app: ReturnType<typeof buildGatewayApp>): void {
+  const webDist = process.env["MIX_WEB_DIST"];
+  if (!webDist || !existsSync(webDist)) return;
+  app.use("/assets/*", serveStatic({ root: webDist }));
+  const indexHtml = serveStatic({ root: webDist, path: "index.html" });
+  app.get("/", indexHtml);
+  app.get("*", async (c, next) => {
+    if (c.req.path.startsWith("/api/") || c.req.path === "/health") return next();
+    return indexHtml(c, next);
+  });
+}
 
 function defaultDataDir(): string {
   return process.env["MIX_DATA_DIR"] ?? join(homedir(), ".mcp-inspector-x");
@@ -44,6 +62,7 @@ async function main(): Promise<void> {
   }
 
   const app = buildGatewayApp({ adapter, storage, serverManager, secrets });
+  mountWebAssets(app);
   const port = Number(process.env["PORT"] ?? 6275);
   const server = serve({ fetch: app.fetch, port }, (info) => {
     console.log(

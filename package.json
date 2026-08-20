@@ -6,6 +6,9 @@
   "engines": {
     "node": ">=22.19.0"
   },
+  "bin": {
+    "mcp-inspector-x": "./bin/mcp-inspector-x.mjs"
+  },
   "workspaces": [
     "apps/*",
     "packages/*"
@@ -18,10 +21,14 @@
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "package": "node scripts/package.mjs",
+    "smoke": "node scripts/smoke.mjs",
+    "conformance": "node scripts/conformance.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
     "typescript": "^5.9.2",
     "vitest": "^4.0.0"
   }

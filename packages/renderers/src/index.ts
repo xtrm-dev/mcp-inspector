@@ -1,18 +1,32 @@
 import type { JsonValue } from "@mcp-inspector-x/protocol";
-import type { RendererKind, RendererMeta, RenderResult } from "./types";
+import type { RendererKind, RendererMeta, RenderPageResult, RenderResult } from "./types";
 import { isFlatObjectArray, isJsonPrimitive, isMcpContentBlockShape, isPlainObject } from "./shape";
-import { renderJsonTree } from "./impl/json-tree";
-import { renderJsonFormatted } from "./impl/json-formatted";
-import { renderJsonRaw } from "./impl/json-raw";
-import { renderTable } from "./impl/table";
-import { renderToon } from "./impl/toon";
-import { renderCsv } from "./impl/csv";
-import { renderTsv } from "./impl/tsv";
-import { renderNdjson } from "./impl/ndjson";
-import { renderText } from "./impl/text";
-import { renderMcpContentBlock } from "./impl/mcp-content-block";
+import { renderJsonTree, renderJsonTreePage } from "./impl/json-tree";
+import { renderJsonFormatted, renderJsonFormattedPage } from "./impl/json-formatted";
+import { renderJsonRaw, renderJsonRawPage } from "./impl/json-raw";
+import { renderTable, renderTablePage } from "./impl/table";
+import { renderToon, renderToonPage } from "./impl/toon";
+import { renderCsv, renderCsvPage } from "./impl/csv";
+import { renderTsv, renderTsvPage } from "./impl/tsv";
+import { renderNdjson, renderNdjsonPage } from "./impl/ndjson";
+import { renderText, renderTextPage } from "./impl/text";
+import { renderMcpContentBlock, renderMcpContentBlockPage } from "./impl/mcp-content-block";
 
-export type { RendererKind, RendererMeta, RenderResult };
+export type { RendererKind, RendererMeta, RenderPageResult, RenderResult };
+
+// ---- Large-payload spill threshold (ADR-0003 / Phase F slice 2) ----
+//
+// Any tool-call/resource-read result whose stringified JSON exceeds this
+// many bytes should be spilled to the artifact store by the caller (the
+// gateway) instead of inlined in the HTTP response. Override via the
+// RENDER_INLINE_MAX_BYTES env var (must parse to a positive number).
+export const DEFAULT_RENDER_INLINE_MAX_BYTES = 64 * 1024; // 64 KiB
+
+export function renderInlineMaxBytes(): number {
+  const raw = process.env.RENDER_INLINE_MAX_BYTES;
+  const parsed = raw ? Number(raw) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_RENDER_INLINE_MAX_BYTES;
+}
 
 // ---- Legacy classifier surface — preserved as-is; other packages (apps/web)
 // import these directly. The registry below is an extension, not a
@@ -55,6 +69,14 @@ export interface RendererRegistry {
   render(input: unknown, opts: { kind: RendererKind; hint?: string }): RenderResult;
   /** Upgrades classifyResult(): picks the best renderer kind for arbitrary input. */
   suggest(input: unknown): RendererKind;
+  /**
+   * Bounded window of a render: [offset, offset + limit) rows/lines for the
+   * given kind, without formatting the rest of `input`. `input` is expected
+   * to already be resolved in memory — for an artifact-backed payload the
+   * caller (gateway) is responsible for streaming just the requested window
+   * off disk before calling this (see packages/storage artifacts.getPage).
+   */
+  renderPage(input: unknown, opts: { kind: RendererKind; offset: number; limit: number }): RenderPageResult;
 }
 
 const RENDER_FNS: Record<RendererKind, (input: unknown) => RenderResult> = {
@@ -133,6 +155,19 @@ const META: Record<RendererKind, RendererMeta> = {
   },
 };
 
+const RENDER_PAGE_FNS: Record<RendererKind, (input: unknown, offset: number, limit: number) => RenderPageResult> = {
+  "json-tree": renderJsonTreePage,
+  "json-formatted": renderJsonFormattedPage,
+  "json-raw": renderJsonRawPage,
+  table: renderTablePage,
+  toon: renderToonPage,
+  csv: renderCsvPage,
+  tsv: renderTsvPage,
+  ndjson: renderNdjsonPage,
+  text: renderTextPage,
+  "mcp-content-block": renderMcpContentBlockPage,
+};
+
 const ALL_KINDS: RendererKind[] = Object.keys(RENDER_FNS) as RendererKind[];
 
 // Lazy heuristic threshold for "large array of primitives" -> ndjson.
@@ -165,5 +200,13 @@ export function createRendererRegistry(): RendererRegistry {
       }
     },
     suggest: suggestKind,
+    renderPage: (input, opts) => {
+      const fn = RENDER_PAGE_FNS[opts.kind];
+      try {
+        return fn(input, opts.offset, opts.limit);
+      } catch (err) {
+        return { ok: false, kind: opts.kind, reason: err instanceof Error ? err.message : String(err) };
+      }
+    },
   };
 }

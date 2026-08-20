@@ -1,5 +1,5 @@
-import type { RenderResult } from "../types";
-import { errMsg, isMcpContentBlockShape, isPlainObject } from "../shape";
+import type { RenderPageResult, RenderResult } from "../types";
+import { errMsg, isMcpContentBlockShape, isPlainObject, pageLines } from "../shape";
 
 const KIND = "mcp-content-block" as const;
 
@@ -30,4 +30,12 @@ export function renderMcpContentBlock(input: unknown): RenderResult {
   } catch (err) {
     return { ok: false, kind: KIND, reason: errMsg(err) };
   }
+}
+
+// Line cursor: pages over the pretty-printed `{ blocks }` JSON's lines.
+export function renderMcpContentBlockPage(input: unknown, offset: number, limit: number): RenderPageResult {
+  const full = renderMcpContentBlock(input);
+  if (!full.ok) return full;
+  const { page, hasMore } = pageLines(full.text, offset, limit);
+  return { ok: true, kind: KIND, lines: page, offset, limit, hasMore };
 }

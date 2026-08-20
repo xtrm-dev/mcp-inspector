@@ -1,5 +1,5 @@
-import type { RenderResult } from "../types";
-import { deriveColumns, errMsg, isFlatObjectArray, safeSample, toRows } from "../shape";
+import type { RenderPageResult, RenderResult } from "../types";
+import { deriveColumns, errMsg, isFlatObjectArray, pageArray, safeSample, toRows } from "../shape";
 
 const KIND = "toon" as const;
 
@@ -46,4 +46,22 @@ function encodeCell(value: unknown): string {
     return value.length === 0 || /[\s~"]/.test(value) ? JSON.stringify(value) : value;
   }
   return JSON.stringify(JSON.stringify(value));
+}
+
+// Row cursor: `:columns`/`:rows` header is a stable-across-pages concern
+// left to the caller (it's derivable once from the full input); this page
+// only emits the `- <row>` lines for [offset, offset+limit).
+export function renderToonPage(input: unknown, offset: number, limit: number): RenderPageResult {
+  if (!isFlatObjectArray(input)) {
+    return { ok: false, kind: KIND, reason: "input is not a non-empty array of flat (scalar-valued) objects" };
+  }
+  try {
+    const columns = deriveColumns(input);
+    const { page, hasMore } = pageArray(input, offset, limit);
+    const rows = toRows(page, columns);
+    const lines = rows.map((row) => `- ${row.map(encodeCell).join(" ")}`);
+    return { ok: true, kind: KIND, lines, rows, columns, offset, limit, hasMore };
+  } catch (err) {
+    return { ok: false, kind: KIND, reason: errMsg(err) };
+  }
 }

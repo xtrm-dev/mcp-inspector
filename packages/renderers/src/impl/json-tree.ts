@@ -1,5 +1,5 @@
-import type { RenderResult } from "../types";
-import { errMsg, isPlainObject } from "../shape";
+import type { RenderPageResult, RenderResult } from "../types";
+import { errMsg, isPlainObject, pageLines } from "../shape";
 
 const KIND = "json-tree" as const;
 
@@ -16,6 +16,14 @@ export function renderJsonTree(input: unknown): RenderResult {
   } catch (err) {
     return { ok: false, kind: KIND, reason: errMsg(err) };
   }
+}
+
+// Line cursor: no natural row shape — pages over the printed tree's lines.
+export function renderJsonTreePage(input: unknown, offset: number, limit: number): RenderPageResult {
+  const full = renderJsonTree(input);
+  if (!full.ok) return full;
+  const { page, hasMore } = pageLines(full.text, offset, limit);
+  return { ok: true, kind: KIND, lines: page, offset, limit, hasMore };
 }
 
 function printNode(value: unknown, depth: number, indent: string): string {

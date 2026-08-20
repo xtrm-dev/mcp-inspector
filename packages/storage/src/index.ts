@@ -15,6 +15,7 @@ export {
   type ArtifactRecord,
   type ArtifactStoreOptions,
   type PutArtifactInput,
+  type ArtifactPage,
 } from "./artifacts";
 
 export {

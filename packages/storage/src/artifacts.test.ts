@@ -62,4 +62,38 @@ describe("artifact store", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  describe("getPage (bounded line-windowed read)", () => {
+    it("returns a bounded window with hasMore across a multi-page walk", async () => {
+      const dir = tempRoot();
+      try {
+        const db = openDatabase({ path: ":memory:" });
+        applyMigrations(db);
+        const store = createArtifactStore({ db, root: join(dir, "artifacts") });
+        const lineCount = 1000;
+        const text = Array.from({ length: lineCount }, (_, i) => `line-${i}`).join("\n");
+        const rec = store.put({ bytes: new TextEncoder().encode(text), mediaType: "application/x-ndjson" });
+
+        const first = await store.getPage(rec.hash, 0, 10);
+        expect(first.lines).toEqual(Array.from({ length: 10 }, (_, i) => `line-${i}`));
+        expect(first.hasMore).toBe(true);
+
+        const middle = await store.getPage(rec.hash, 500, 5);
+        expect(middle.lines).toEqual(["line-500", "line-501", "line-502", "line-503", "line-504"]);
+        expect(middle.hasMore).toBe(true);
+
+        const last = await store.getPage(rec.hash, lineCount - 3, 10);
+        expect(last.lines).toEqual(["line-997", "line-998", "line-999"]);
+        expect(last.hasMore).toBe(false);
+
+        const beyond = await store.getPage(rec.hash, lineCount + 50, 10);
+        expect(beyond.lines).toEqual([]);
+        expect(beyond.hasMore).toBe(false);
+
+        db.close();
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  });
 });

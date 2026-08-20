@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createInterface } from "node:readline";
 import { join } from "node:path";
 import type { SqliteDb } from "./database";
 
@@ -20,11 +21,25 @@ export interface PutArtifactInput {
   mediaType?: string;
 }
 
+export interface ArtifactPage {
+  lines: string[];
+  offset: number;
+  limit: number;
+  hasMore: boolean;
+}
+
 export interface ArtifactStore {
   put(input: PutArtifactInput): ArtifactRecord;
   getBytes(hash: string): Uint8Array;
   getRecord(hash: string): ArtifactRecord | null;
   pathFor(hash: string): string;
+  /**
+   * Bounded-memory line-windowed read of a "\n"-delimited artifact: streams
+   * the file and stops as soon as [offset, offset + limit) (plus one
+   * lookahead line for hasMore) has been seen. Never buffers the whole file
+   * — safe for artifacts far larger than available memory.
+   */
+  getPage(hash: string, offset: number, limit: number): Promise<ArtifactPage>;
 }
 
 export function createArtifactStore(options: ArtifactStoreOptions): ArtifactStore {
@@ -64,6 +79,9 @@ export function createArtifactStore(options: ArtifactStoreOptions): ArtifactStor
       if (!row) return null;
       return { hash: row.hash, size: row.size, mediaType: row.media_type, createdAt: row.created_at };
     },
+    getPage(hash, offset, limit) {
+      return readArtifactPage(pathFor(hash), offset, limit);
+    },
   };
 
   function getRecordOrThrow(hash: string): ArtifactRecord {
@@ -71,4 +89,49 @@ export function createArtifactStore(options: ArtifactStoreOptions): ArtifactStor
     if (!row) throw new Error(`artifact ${hash} not found after insert`);
     return { hash: row.hash, size: row.size, mediaType: row.media_type, createdAt: row.created_at };
   }
+}
+
+/**
+ * Streams `filePath` line-by-line and collects at most `limit + 1` lines
+ * starting at `offset` (the +1 is a lookahead used only to compute
+ * `hasMore`, then discarded) — the stream is destroyed as soon as that
+ * many lines have been seen, so nothing past the requested window is ever
+ * read into memory.
+ */
+function readArtifactPage(filePath: string, offset: number, limit: number): Promise<ArtifactPage> {
+  const safeOffset = Math.max(0, offset);
+  const safeLimit = Math.max(0, limit);
+  return new Promise((resolve, reject) => {
+    const stream = createReadStream(filePath, { encoding: "utf8" });
+    const rl = createInterface({ input: stream, crlfDelay: Infinity });
+    const collected: string[] = [];
+    let seen = 0;
+    let settled = false;
+
+    function finish(lines: string[]): void {
+      if (settled) return;
+      settled = true;
+      rl.close();
+      stream.destroy();
+      const hasMore = lines.length > safeLimit;
+      resolve({ lines: hasMore ? lines.slice(0, safeLimit) : lines, offset: safeOffset, limit: safeLimit, hasMore });
+    }
+
+    rl.on("line", (line) => {
+      if (seen >= safeOffset && collected.length <= safeLimit) {
+        collected.push(line);
+      }
+      seen += 1;
+      if (collected.length > safeLimit) {
+        finish(collected);
+      }
+    });
+    rl.on("close", () => finish(collected));
+    stream.on("error", (err) => {
+      if (settled) return;
+      settled = true;
+      rl.close();
+      reject(err);
+    });
+  });
 }

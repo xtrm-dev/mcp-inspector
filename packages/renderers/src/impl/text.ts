@@ -1,5 +1,5 @@
-import type { RenderResult } from "../types";
-import { errMsg, isMcpContentBlockShape, isPlainObject } from "../shape";
+import type { RenderPageResult, RenderResult } from "../types";
+import { errMsg, isMcpContentBlockShape, isPlainObject, pageLines } from "../shape";
 
 const KIND = "text" as const;
 
@@ -25,4 +25,13 @@ export function renderText(input: unknown): RenderResult {
   } catch (err) {
     return { ok: false, kind: KIND, reason: errMsg(err) };
   }
+}
+
+// Line cursor: text has no natural row shape, so this pages over the
+// same text renderText() would produce ("\n"-split).
+export function renderTextPage(input: unknown, offset: number, limit: number): RenderPageResult {
+  const full = renderText(input);
+  if (!full.ok) return full;
+  const { page, hasMore } = pageLines(full.text, offset, limit);
+  return { ok: true, kind: KIND, lines: page, offset, limit, hasMore };
 }

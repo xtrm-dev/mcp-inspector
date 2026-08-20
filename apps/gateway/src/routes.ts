@@ -8,7 +8,7 @@ import {
   type McpClientAdapter,
 } from "@mcp-inspector-x/protocol";
 import type { Storage, EventRow, UpsertServerInput } from "@mcp-inspector-x/storage";
-import { createRendererRegistry } from "@mcp-inspector-x/renderers";
+import { createRendererRegistry, renderInlineMaxBytes, type RendererKind, type RenderPageResult } from "@mcp-inspector-x/renderers";
 import {
   isRequest,
   isResponse,
@@ -192,6 +192,60 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
 
   app.get("/api/v1/renderers", (c) => {
     return c.json({ renderers: rendererRegistry.available().map((kind) => rendererRegistry.describe(kind)) });
+  });
+
+  // ---- /api/v1/artifacts* — bounded page reads over spilled large payloads ----
+  //
+  // Only large (RENDER_INLINE_MAX_BYTES-exceeding) tool-call/resource-read
+  // results are readable this way; artifacts written for other reasons
+  // (evidence blobs, DB round.resultArtifact) 404 here just the same as a
+  // missing hash — this endpoint doesn't distinguish, it just streams
+  // whatever "\n"-delimited bytes are on disk for the hash.
+  app.get("/api/v1/artifacts/:sha/page", async (c) => {
+    const sha = c.req.param("sha");
+    const record = deps.storage.artifacts.getRecord(sha);
+    if (!record) {
+      return c.json({ error: `artifact '${sha}' not found` }, 404);
+    }
+    const offset = parseSince(c.req.query("offset"));
+    const limit = clampRenderPageLimit(c.req.query("limit"));
+    let page: Awaited<ReturnType<typeof deps.storage.artifacts.getPage>>;
+    try {
+      page = await deps.storage.artifacts.getPage(sha, offset, limit);
+    } catch (err) {
+      return c.json({ error: errMsg(err) }, 500);
+    }
+
+    const kindParam = c.req.query("kind");
+    const kind = isRendererKind(kindParam) ? kindParam : null;
+    if (kind && record.mediaType === "application/x-ndjson" && page.lines.length > 0) {
+      try {
+        const items = page.lines.map((line) => JSON.parse(line) as unknown);
+        const formatted = rendererRegistry.renderPage(items, { kind, offset: 0, limit: items.length });
+        if (formatted.ok) {
+          return c.json({
+            artifactRef: sha,
+            offset: page.offset,
+            limit: page.limit,
+            hasMore: page.hasMore,
+            kind,
+            lines: formatted.lines,
+            ...(formatted.rows !== undefined ? { rows: formatted.rows } : {}),
+            ...(formatted.columns !== undefined ? { columns: formatted.columns } : {}),
+          });
+        }
+      } catch {
+        // fall through to the raw-lines response below
+      }
+    }
+
+    return c.json({
+      artifactRef: sha,
+      offset: page.offset,
+      limit: page.limit,
+      hasMore: page.hasMore,
+      lines: page.lines,
+    });
   });
 
   // ---- /api/v1/servers* — real catalog CRUD ----
@@ -440,12 +494,28 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         kind: "execution.complete",
         payload: { serverId: id, capabilityId, evidenceRefs: [evidenceRow.id] },
       });
-      return c.json({
+      const surface = buildRenderSurface(contents, deps.storage.artifacts);
+      const response: {
+        executionId: string;
+        evidence: unknown;
+        suggestedRenderer: RendererKind;
+        spilled: boolean;
+        contents?: unknown;
+        artifactRef?: string;
+        preview?: RenderPageResult;
+      } = {
         executionId: execution.id,
-        contents,
         evidence,
-        suggestedRenderer: rendererRegistry.suggest(contents),
-      });
+        suggestedRenderer: surface.kind,
+        spilled: surface.spilled,
+      };
+      if (surface.spilled) {
+        response.artifactRef = surface.artifactRef;
+        response.preview = surface.preview;
+      } else {
+        response.contents = contents;
+      }
+      return c.json(response);
     } catch (err) {
       const endedAt = new Date();
       const message = errMsg(err);
@@ -662,13 +732,30 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         },
       });
 
-      return c.json({
+      const surface = buildRenderSurface(value, deps.storage.artifacts);
+      const response: {
+        executionId: string;
+        evidence: unknown;
+        evidenceRefs: Array<{ id: string; kind: string; artifactRef: string }>;
+        suggestedRenderer: RendererKind;
+        spilled: boolean;
+        value?: unknown;
+        artifactRef?: string;
+        preview?: RenderPageResult;
+      } = {
         executionId: done.id,
-        value,
         evidence,
         evidenceRefs: [{ id: evidenceRow.id, kind: evidenceRow.kind, artifactRef: evidenceRow.artifactRef }],
-        suggestedRenderer: rendererRegistry.suggest(value),
-      });
+        suggestedRenderer: surface.kind,
+        spilled: surface.spilled,
+      };
+      if (surface.spilled) {
+        response.artifactRef = surface.artifactRef;
+        response.preview = surface.preview;
+      } else {
+        response.value = value;
+      }
+      return c.json(response);
     } catch (err) {
       const endedAt = new Date();
       const message = errMsg(err);
@@ -1358,4 +1445,54 @@ function clampLimit(value: string | undefined): number {
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+// ---- Large-payload rendering (ADR-0003 / Phase F slice 2) ----
+
+const RENDER_PAGE_DEFAULT_LIMIT = 50;
+const RENDER_PAGE_MAX_LIMIT = 1000;
+// First-N rows/lines shown inline alongside artifactRef when a result spills.
+const RENDER_PREVIEW_LIMIT = 20;
+
+function clampRenderPageLimit(value: string | undefined): number {
+  const n = value ? Number(value) : RENDER_PAGE_DEFAULT_LIMIT;
+  if (!Number.isFinite(n) || n <= 0) return RENDER_PAGE_DEFAULT_LIMIT;
+  return Math.min(RENDER_PAGE_MAX_LIMIT, Math.floor(n));
+}
+
+const RENDERER_KINDS = new Set(rendererRegistry.available());
+function isRendererKind(value: string | undefined): value is RendererKind {
+  return value !== undefined && RENDERER_KINDS.has(value as RendererKind);
+}
+
+export type RenderSurface =
+  | { spilled: false; kind: RendererKind; value: unknown }
+  | { spilled: true; kind: RendererKind; artifactRef: string; preview: RenderPageResult };
+
+/**
+ * Decides whether a tool-call/resource-read result is small enough to
+ * inline or must spill to the artifact store. Spill happens BEFORE the
+ * caller does anything renderer-facing with `value` — the only render call
+ * made here is a bounded renderPage() over the first RENDER_PREVIEW_LIMIT
+ * items, never a full render() of a payload that's already over threshold.
+ *
+ * When spilling, an array is stored as NDJSON (one element per line) so
+ * GET /api/v1/artifacts/:sha/page can stream bounded windows without
+ * parsing the whole thing; a non-array value falls back to pretty JSON
+ * (still line-oriented, but pageable as raw lines only — no row cursor).
+ */
+export function buildRenderSurface(value: unknown, artifacts: Storage["artifacts"]): RenderSurface {
+  const resultJson = JSON.stringify(value ?? null);
+  const kind = rendererRegistry.suggest(value);
+  const byteLen = Buffer.byteLength(resultJson, "utf8");
+  if (byteLen <= renderInlineMaxBytes()) {
+    return { spilled: false, kind, value };
+  }
+  const bytes = Array.isArray(value)
+    ? new TextEncoder().encode(value.map((item) => JSON.stringify(item) ?? "null").join("\n"))
+    : new TextEncoder().encode(JSON.stringify(value, null, 2) ?? "null");
+  const mediaType = Array.isArray(value) ? "application/x-ndjson" : "application/json";
+  const rec = artifacts.put({ bytes, mediaType });
+  const preview = rendererRegistry.renderPage(value, { kind, offset: 0, limit: RENDER_PREVIEW_LIMIT });
+  return { spilled: true, kind, artifactRef: rec.hash, preview };
 }

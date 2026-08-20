@@ -1,5 +1,5 @@
-import type { RenderResult } from "../types";
-import { errMsg } from "../shape";
+import type { RenderPageResult, RenderResult } from "../types";
+import { errMsg, pageLines } from "../shape";
 
 const KIND = "json-formatted" as const;
 
@@ -13,4 +13,12 @@ export function renderJsonFormatted(input: unknown): RenderResult {
   } catch (err) {
     return { ok: false, kind: KIND, reason: errMsg(err) };
   }
+}
+
+// Line cursor: pages over the pretty-printed JSON's lines.
+export function renderJsonFormattedPage(input: unknown, offset: number, limit: number): RenderPageResult {
+  const full = renderJsonFormatted(input);
+  if (!full.ok) return full;
+  const { page, hasMore } = pageLines(full.text, offset, limit);
+  return { ok: true, kind: KIND, lines: page, offset, limit, hasMore };
 }

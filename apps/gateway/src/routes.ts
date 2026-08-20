@@ -9,6 +9,16 @@ import {
 } from "@mcp-inspector-x/protocol";
 import type { Storage, EventRow, UpsertServerInput } from "@mcp-inspector-x/storage";
 import { createRendererRegistry } from "@mcp-inspector-x/renderers";
+import {
+  isRequest,
+  isResponse,
+  isNotification,
+  createLineDecoder,
+  type RunnerClient,
+  type CaptureEnvelope,
+  type JsonRpcRequest,
+} from "@mcp-inspector-x/runner";
+import { connect as netConnect, type Socket } from "node:net";
 import type { ServerManager } from "./servers";
 import type { SecretsRegistry } from "./secrets";
 import { compareExecutions } from "./compare";
@@ -23,6 +33,12 @@ export interface GatewayDeps {
   storage: Storage;
   serverManager: ServerManager;
   secrets: SecretsRegistry;
+  // Required to open stdio-proxy capture sessions (POST
+  // /api/v1/capture-sessions/stdio-proxy/open) — the runner is the only
+  // thing allowed to own the ingest UDS the proxy dials (ADR-0003-style
+  // privilege separation). Omit it and that endpoint fails fast with a
+  // clear 503, same convention as ServerManagerOptions.runnerClient.
+  runnerClient?: RunnerClient;
 }
 
 const TransportSchema = z.enum(["streamable-http", "stdio"]);
@@ -114,6 +130,15 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
   const app = new Hono();
 
   app.use("*", cors({ origin: (o) => o ?? "*" }));
+
+  // ---- stdio-proxy capture state (Phase L slice 3) ----
+  // captureReaders: the gateway's own UDS connection into each open ingest
+  // socket (one per capture session — see proxy-session-open below).
+  // capturePending: per-session, un-answered JSON-RPC requests keyed by
+  // id, so the matching response can be recorded alongside it as one
+  // execution_round instead of two orphaned evidence rows.
+  const captureReaders = new Map<string, Socket>();
+  const capturePending = new Map<string, Map<JsonRpcRequest["id"], { request: JsonRpcRequest; ts: number }>>();
 
   // ---- Unversioned status ----
 
@@ -933,6 +958,91 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     return c.json({ captureSession: cs, agentRuns: runs });
   });
 
+  // ---- stdio-proxy capture (Phase L slice 3 — ADR-0002) ----
+  //
+  // Open: ask the runner for a fresh ingest UDS, create the durable
+  // CaptureSession (kind='stdio-proxy'), and dial into the ingest socket
+  // ourselves as a reader BEFORE returning the socket path — so whoever
+  // launches the stdio-proxy binary next (with --ingest <socketPath>) can
+  // never race ahead of us and have an early message dropped.
+  app.post("/api/v1/capture-sessions/stdio-proxy/open", async (c) => {
+    if (!deps.runnerClient) {
+      return c.json(
+        { error: "stdio-proxy capture requires a privileged runner (none configured on this gateway)" },
+        503,
+      );
+    }
+    const body = (await c.req.json().catch(() => null)) as { targetLabel?: unknown } | null;
+    const targetLabel =
+      typeof body?.targetLabel === "string" && body.targetLabel.length > 0
+        ? body.targetLabel
+        : "stdio-proxy";
+
+    const attached = await deps.runnerClient.attachCaptureSession({});
+    const cs = deps.storage.captureSessions.create({
+      kind: "stdio-proxy",
+      metadata: { runnerSessionId: attached.sessionId, targetLabel },
+    });
+
+    const reader = await connectCaptureReader(attached.socketPath);
+    capturePending.set(cs.id, new Map());
+    captureReaders.set(cs.id, reader);
+    const pending = capturePending.get(cs.id)!;
+    const decoder = createLineDecoder<CaptureEnvelope>();
+    reader.on("data", (chunk) => {
+      for (const envelope of decoder.push(chunk)) {
+        if (envelope === null) continue;
+        recordCapturedEnvelope(deps.storage, cs.id, targetLabel, pending, envelope);
+      }
+    });
+    reader.on("close", () => {
+      captureReaders.delete(cs.id);
+      capturePending.delete(cs.id);
+    });
+    reader.on("error", () => {
+      // best-effort tap; the proxy keeps forwarding stdio regardless
+    });
+
+    deps.storage.events.append({
+      kind: "capture.stdio_proxy.opened",
+      payload: { captureSessionId: cs.id, targetLabel },
+    });
+    return c.json({ captureSession: cs, socketPath: attached.socketPath }, 201);
+  });
+
+  app.post("/api/v1/capture-sessions/:id/close", (c) => {
+    const id = c.req.param("id");
+    const cs = deps.storage.captureSessions.get(id);
+    if (!cs) return c.json({ error: `unknown capture_session '${id}'` }, 404);
+    captureReaders.get(id)?.destroy();
+    captureReaders.delete(id);
+    capturePending.delete(id);
+    const ended = deps.storage.captureSessions.end(id);
+    deps.storage.events.append({ kind: "capture.session.closed", payload: { captureSessionId: id } });
+    return c.json({ captureSession: ended });
+  });
+
+  // Read endpoint: every JSON-RPC message captured for this session,
+  // resolved from evidence back into the actual message content — what
+  // the E2E test (and any future UI) asserts against.
+  app.get("/api/v1/capture-sessions/:id/captured-messages", (c) => {
+    const id = c.req.param("id");
+    const cs = deps.storage.captureSessions.get(id);
+    if (!cs) return c.json({ error: `unknown capture_session '${id}'` }, 404);
+    const executions = deps.storage.executions.listForCaptureSession(id);
+    const items = executions.map((execution) => {
+      const rounds = deps.storage.rounds.listForExecution(execution.id);
+      const evidence = deps.storage.evidence.listForExecution(execution.id).map((ev) => ({
+        id: ev.id,
+        kind: ev.kind,
+        recordedAt: ev.recordedAt,
+        message: JSON.parse(new TextDecoder().decode(deps.storage.artifacts.getBytes(ev.artifactRef))) as unknown,
+      }));
+      return { execution, rounds, evidence };
+    });
+    return c.json({ captureSession: cs, messages: items });
+  });
+
   // ---- Traces (Phase M slice 1: substrate + ingest, no correlation yet) ----
 
   // ---- Source revisions (Phase M slice 2: substrate only, indexer is slice 3+) ----
@@ -1123,6 +1233,115 @@ async function sendEvent(
       payload: row.payload,
     }),
   });
+}
+
+function connectCaptureReader(socketPath: string): Promise<Socket> {
+  return new Promise((resolve, reject) => {
+    const socket = netConnect(socketPath);
+    const onErr = (err: Error) => {
+      socket.off("connect", onOk);
+      reject(err);
+    };
+    const onOk = () => {
+      socket.off("error", onErr);
+      resolve(socket);
+    };
+    socket.once("error", onErr);
+    socket.once("connect", onOk);
+  });
+}
+
+/**
+ * Persist one tapped JSON-RPC message into the same execution_round +
+ * evidence infrastructure every other capture path uses. Requests are
+ * buffered (per capture session) until their matching response arrives so
+ * the pair lands as a single execution/round with both raw_request and
+ * raw_response evidence — the shape the packet builder and UI already know
+ * how to read. Notifications (no id, no response ever coming) get their
+ * own one-shot execution immediately.
+ */
+function recordCapturedEnvelope(
+  storage: Storage,
+  captureSessionId: string,
+  targetLabel: string,
+  pending: Map<JsonRpcRequest["id"], { request: JsonRpcRequest; ts: number }>,
+  envelope: CaptureEnvelope,
+): void {
+  const { message, ts } = envelope;
+
+  if (isRequest(message)) {
+    pending.set(message.id, { request: message, ts });
+    return;
+  }
+
+  if (isResponse(message)) {
+    // Per spec, an error response replying to an unparseable request may
+    // carry id: null — there's nothing to pair it with in `pending`.
+    const entry = message.id !== null ? pending.get(message.id) : undefined;
+    if (entry && message.id !== null) pending.delete(message.id);
+    const startedAtMs = entry?.ts ?? ts;
+    const isError = "error" in message;
+
+    const execution = storage.executions.create({
+      serverId: targetLabel,
+      capabilityId: entry ? entry.request.method : `response:${String(message.id)}`,
+      captureSessionId,
+      status: isError ? "error" : "complete",
+    });
+
+    const round = storage.rounds.append({
+      executionId: execution.id,
+      roundIndex: 0,
+      kind: "initial",
+      argumentsJson: entry ? JSON.stringify(entry.request.params ?? null) : null,
+      resultInlineJson: isError ? null : JSON.stringify(message.result ?? null),
+      errorJson: isError ? JSON.stringify(message.error) : null,
+      durationMs: ts - startedAtMs,
+      startedAt: new Date(startedAtMs).toISOString(),
+      endedAt: new Date(ts).toISOString(),
+    });
+
+    if (entry) {
+      const reqBlob = storage.artifacts.put({
+        bytes: new TextEncoder().encode(JSON.stringify(entry.request)),
+        mediaType: "application/json",
+      });
+      storage.evidence.append({
+        executionId: execution.id,
+        roundId: round.id,
+        kind: "raw_request",
+        artifactRef: reqBlob.hash,
+      });
+    }
+    const respBlob = storage.artifacts.put({
+      bytes: new TextEncoder().encode(JSON.stringify(message)),
+      mediaType: "application/json",
+    });
+    storage.evidence.append({
+      executionId: execution.id,
+      roundId: round.id,
+      kind: "raw_response",
+      artifactRef: respBlob.hash,
+    });
+    storage.executions.updateStatus(execution.id, isError ? "error" : "complete", round.endedAt);
+    return;
+  }
+
+  if (isNotification(message)) {
+    const nowIso = new Date(ts).toISOString();
+    const execution = storage.executions.create({
+      serverId: targetLabel,
+      capabilityId: message.method,
+      captureSessionId,
+      status: "complete",
+    });
+    const blob = storage.artifacts.put({
+      bytes: new TextEncoder().encode(JSON.stringify(message)),
+      mediaType: "application/json",
+    });
+    storage.evidence.append({ executionId: execution.id, kind: "notification", artifactRef: blob.hash });
+    storage.executions.updateStatus(execution.id, "complete", nowIso);
+  }
 }
 
 function parseSince(value: string | undefined): number {

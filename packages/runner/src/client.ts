@@ -35,6 +35,9 @@ export interface RunnerClient {
   closeStdioMcp(
     params: RunnerMethodMap["runner.closeStdioMcp"]["params"],
   ): Promise<RunnerMethodMap["runner.closeStdioMcp"]["result"]>;
+  attachCaptureSession(
+    params: RunnerMethodMap["runner.attachCaptureSession"]["params"],
+  ): Promise<RunnerMethodMap["runner.attachCaptureSession"]["result"]>;
   close(): Promise<void>;
 }
 
@@ -164,6 +167,9 @@ export async function connectRunnerClient(options: RunnerClientOptions): Promise
     },
     closeStdioMcp(params) {
       return call("runner.closeStdioMcp", params);
+    },
+    attachCaptureSession(params) {
+      return call("runner.attachCaptureSession", params);
     },
     async close() {
       closed = true;

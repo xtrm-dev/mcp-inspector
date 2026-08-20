@@ -10,7 +10,8 @@
     "./protocol": "./src/protocol.ts"
   },
   "bin": {
-    "mcp-inspector-x-runner": "./src/main.ts"
+    "mcp-inspector-x-runner": "./src/main.ts",
+    "mcp-inspector-x-stdio-proxy": "./src/stdio-proxy.mjs"
   },
   "scripts": {
     "dev": "tsx watch src/main.ts",

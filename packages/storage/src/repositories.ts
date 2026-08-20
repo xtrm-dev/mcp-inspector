@@ -577,6 +577,7 @@ export interface ExecutionRepository {
   list(opts?: { limit?: number }): ExecutionRecord[];
   listForCapability(capabilityId: string, opts?: { limit?: number }): ExecutionRecord[];
   listForAgentRun(agentRunId: string, opts?: { limit?: number }): ExecutionRecord[];
+  listForCaptureSession(captureSessionId: string, opts?: { limit?: number }): ExecutionRecord[];
   updateStatus(id: string, status: string, endedAt?: Iso | null): ExecutionRecord;
 }
 
@@ -595,6 +596,9 @@ export function createExecutionRepository(db: SqliteDb): ExecutionRepository {
   );
   const listAgentStmt = db.prepare(
     "SELECT * FROM execution WHERE agent_run_id = ? ORDER BY started_at ASC LIMIT ?",
+  );
+  const listCaptureStmt = db.prepare(
+    "SELECT * FROM execution WHERE capture_session_id = ? ORDER BY started_at ASC LIMIT ?",
   );
   const updateStmt = db.prepare(
     "UPDATE execution SET status = @status, ended_at = @ended_at WHERE id = @id",
@@ -632,6 +636,10 @@ export function createExecutionRepository(db: SqliteDb): ExecutionRepository {
     },
     listForAgentRun(agentRunId, opts) {
       const rows = listAgentStmt.all(agentRunId, opts?.limit ?? 1000) as ExecutionRow[];
+      return rows.map(rowToExecution);
+    },
+    listForCaptureSession(captureSessionId, opts) {
+      const rows = listCaptureStmt.all(captureSessionId, opts?.limit ?? 1000) as ExecutionRow[];
       return rows.map(rowToExecution);
     },
     updateStatus(id, status, endedAt) {

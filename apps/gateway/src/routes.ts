@@ -34,7 +34,21 @@ import type { ServerManager } from "./servers";
 import type { SecretsRegistry } from "./secrets";
 import { compareExecutions } from "./compare";
 import { buildPacket, renderPacketMarkdown } from "./packets";
-import { runWorkspace, MAX_CONCURRENCY, parseTraceparent } from "./executor";
+import {
+  runWorkspace,
+  MAX_CONCURRENCY,
+  parseTraceparent,
+  cancelExecution,
+  isInFlight,
+  registerInFlight,
+  executeTool,
+  executeResourceRead,
+  executeGetPrompt,
+  parseCapabilityId,
+  parseArgs,
+  type ExecuteResult,
+  type ExecuteGetPromptInput,
+} from "./executor";
 import { randomUUID } from "node:crypto";
 
 export type { ServerBinding } from "./servers";
@@ -691,12 +705,15 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       payload: { serverId: id, capabilityId, name, arguments: args },
     });
 
+    const controller = new AbortController();
+    const unregister = registerInFlight(execution.id, controller);
     const startedAt = new Date();
     try {
       const { value, evidence } = await deps.adapter.callTool({
         serverId: id,
         name,
         arguments: args as Parameters<McpClientAdapter["callTool"]>[0]["arguments"],
+        signal: controller.signal,
       });
       const endedAt = new Date();
 
@@ -794,24 +811,40 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       return c.json(response);
     } catch (err) {
       const endedAt = new Date();
-      const message = errMsg(err);
+      const cancelled = controller.signal.aborted;
+      const cancelledBy = cancelled
+        ? typeof controller.signal.reason === "string"
+          ? controller.signal.reason
+          : "user"
+        : null;
+      const message = cancelled ? `cancelled by ${cancelledBy}` : errMsg(err);
       deps.storage.rounds.append({
         executionId: execution.id,
         roundIndex: 0,
         kind: "initial",
         argumentsJson: JSON.stringify(args),
-        errorJson: JSON.stringify({ message }),
+        errorJson: cancelled
+          ? JSON.stringify({ cancelled: true, cancelledBy })
+          : JSON.stringify({ message }),
         durationMs: endedAt.getTime() - startedAt.getTime(),
         startedAt: startedAt.toISOString(),
         endedAt: endedAt.toISOString(),
       });
-      deps.storage.executions.updateStatus(execution.id, "failed", endedAt.toISOString());
+      deps.storage.executions.updateStatus(
+        execution.id,
+        cancelled ? "cancelled" : "failed",
+        endedAt.toISOString(),
+      );
       deps.storage.events.append({
         executionId: execution.id,
-        kind: "execution.failed",
-        payload: { serverId: id, capabilityId, error: message },
+        kind: cancelled ? "execution.cancelled" : "execution.failed",
+        payload: cancelled
+          ? { serverId: id, capabilityId, cancelledBy }
+          : { serverId: id, capabilityId, error: message },
       });
       return c.json({ executionId: execution.id, error: message }, 502);
+    } finally {
+      unregister();
     }
   });
 
@@ -1344,6 +1377,66 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       payload: { traceId: record.traceId, spanCount: record.spanCount, source: record.source },
     });
     return c.json({ trace: record }, 201);
+  });
+
+  // ---- Cancel + retry (Phase E slice 2B) ----
+
+  app.post("/api/v1/executions/:id/cancel", (c) => {
+    const id = c.req.param("id");
+    const record = deps.storage.executions.get(id);
+    if (!record) return c.json({ error: `unknown execution '${id}'` }, 404);
+    if (!isInFlight(id)) {
+      return c.json({ error: `execution '${id}' is not in flight` }, 409);
+    }
+    cancelExecution(id, "user");
+    return c.json({ executionId: id, cancelling: true });
+  });
+
+  app.post("/api/v1/executions/:id/retry", async (c) => {
+    const id = c.req.param("id");
+    const source = deps.storage.executions.get(id);
+    if (!source) return c.json({ error: `unknown execution '${id}'` }, 404);
+    if (!deps.serverManager.getBinding(source.serverId)) {
+      return c.json({ error: `server '${source.serverId}' not connected` }, 409);
+    }
+    const rounds = deps.storage.rounds.listForExecution(id);
+    const lastRound = rounds[rounds.length - 1];
+    if (!lastRound) {
+      return c.json({ error: `execution '${id}' has no rounds to retry` }, 409);
+    }
+    const parsed = parseCapabilityId(source.capabilityId);
+    if (!parsed) {
+      return c.json({ error: `execution '${id}' has an unparseable capabilityId` }, 409);
+    }
+    const args = parseArgs(lastRound.argumentsJson);
+    const execDeps = { adapter: deps.adapter, storage: deps.storage, serverManager: deps.serverManager };
+    const metadata = { retriedFrom: id };
+
+    let result: ExecuteResult;
+    if (parsed.type === "tool") {
+      result = await executeTool(execDeps, {
+        serverId: parsed.serverId,
+        name: parsed.name,
+        arguments: args,
+        metadata,
+      });
+    } else if (parsed.type === "resource") {
+      result = await executeResourceRead(execDeps, { serverId: parsed.serverId, uri: parsed.name, metadata });
+    } else if (parsed.type === "prompt") {
+      const promptInput: ExecuteGetPromptInput = { serverId: parsed.serverId, name: parsed.name, metadata };
+      if (Object.keys(args).length > 0) promptInput.arguments = args;
+      result = await executeGetPrompt(execDeps, promptInput);
+    } else {
+      return c.json({ error: `unsupported capability type '${parsed.type}' for retry` }, 400);
+    }
+
+    return c.json({
+      executionId: result.executionId,
+      retriedFrom: id,
+      ok: result.ok,
+      value: result.value,
+      error: result.error,
+    });
   });
 
   // ---- Trace correlation reads (Phase L slice 2) ----

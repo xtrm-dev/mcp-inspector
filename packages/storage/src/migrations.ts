@@ -256,6 +256,10 @@ ALTER TABLE execution ADD COLUMN trace_id TEXT;
 CREATE INDEX idx_execution_trace_id ON execution(trace_id);
 `;
 
+const V8_EXECUTION_METADATA_JSON = `
+ALTER TABLE execution ADD COLUMN metadata_json TEXT;
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "schema-v1", sql: V1_SCHEMA },
   { version: 2, name: "agent-run-links", sql: V2_AGENT_RUN_LINKS },
@@ -264,6 +268,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 5, name: "stdio-server-fields", sql: V5_STDIO_SERVER_FIELDS },
   { version: 6, name: "capability-source-mapping", sql: V6_CAPABILITY_SOURCE_MAPPING },
   { version: 7, name: "trace-correlation", sql: V7_TRACE_CORRELATION },
+  { version: 8, name: "execution-metadata-json", sql: V8_EXECUTION_METADATA_JSON },
 ];
 
 export function checksum(sql: string): string {

@@ -7,12 +7,18 @@ import {
   type JsonObject,
   type McpClientAdapter,
 } from "@mcp-inspector-x/protocol";
-import type { Storage, EventRow, UpsertServerInput } from "@mcp-inspector-x/storage";
+import type {
+  Storage,
+  EventRow,
+  UpsertServerInput,
+  ExecutionRecord,
+  TraceLink,
+} from "@mcp-inspector-x/storage";
 import type { ServerManager } from "./servers";
 import type { SecretsRegistry } from "./secrets";
 import { compareExecutions } from "./compare";
 import { buildPacket, renderPacketMarkdown } from "./packets";
-import { runWorkspace, MAX_CONCURRENCY } from "./executor";
+import { runWorkspace, MAX_CONCURRENCY, parseTraceparent } from "./executor";
 import { randomUUID } from "node:crypto";
 
 export type { ServerBinding } from "./servers";
@@ -157,6 +163,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         runAll: true,
         agentRuns: true,
         traceIngestV1: true,
+        traceCorrelationV1: true,
         sourceRevisionsV1: true,
       },
     }),
@@ -539,6 +546,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     }
 
     let args: Record<string, unknown> = {};
+    let metaTraceparent: string | undefined;
     try {
       const body = await c.req.json().catch(() => ({}));
       if (body && typeof body === "object" && !Array.isArray(body)) {
@@ -546,13 +554,37 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         if (bodyArgs && typeof bodyArgs === "object" && !Array.isArray(bodyArgs)) {
           args = bodyArgs as Record<string, unknown>;
         }
+        const meta = (body as { _meta?: unknown })._meta;
+        if (meta && typeof meta === "object" && !Array.isArray(meta)) {
+          const tp = (meta as { traceparent?: unknown }).traceparent;
+          if (typeof tp === "string") metaTraceparent = tp;
+        }
       }
     } catch {
       // fallthrough — treat as empty args
     }
 
+    // Phase L slice 2: HTTP header wins over _meta.traceparent when both are
+    // present. Malformed/absent → parseTraceparent returns null, never throws.
+    const traceparent = parseTraceparent(c.req.header("traceparent") ?? metaTraceparent ?? null);
+
     const capabilityId = `${id}::tool::${name}`;
-    const execution = deps.storage.executions.create({ serverId: id, capabilityId });
+    const executionInput: Parameters<typeof deps.storage.executions.create>[0] = {
+      serverId: id,
+      capabilityId,
+    };
+    if (traceparent) executionInput.traceId = traceparent.traceId;
+    const execution = deps.storage.executions.create(executionInput);
+    // If a trace with this traceId already exists, link immediately; if it
+    // arrives later, POST /api/v1/traces late-links via execution.trace_id.
+    if (traceparent && deps.storage.traces.get(traceparent.traceId)) {
+      deps.storage.traces.linkExecution({
+        traceId: traceparent.traceId,
+        executionId: execution.id,
+        kind: "w3c-trace",
+        confidence: 1.0,
+      });
+    }
     deps.storage.events.append({
       executionId: execution.id,
       kind: "execution.created",
@@ -990,8 +1022,52 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       traceId: body.traceId,
       spans: body.spans,
     };
-    if (typeof body.source === "string") putInput.source = body.source;
+    // `source` is either the legacy free-text string (Phase M slice 1) or a
+    // structured { executionId | agentRunId } that drives auto-linking
+    // (Phase L slice 2). Either way it's preserved on the trace row.
+    let linkExecutionId: string | undefined;
+    let linkAgentRunId: string | undefined;
+    if (typeof body.source === "string") {
+      putInput.source = body.source;
+    } else if (body.source && typeof body.source === "object" && !Array.isArray(body.source)) {
+      const src = body.source as { executionId?: unknown; agentRunId?: unknown };
+      if (typeof src.executionId === "string" && src.executionId.length > 0) {
+        linkExecutionId = src.executionId;
+      }
+      if (typeof src.agentRunId === "string" && src.agentRunId.length > 0) {
+        linkAgentRunId = src.agentRunId;
+      }
+      putInput.source = JSON.stringify(body.source);
+    }
     const record = deps.storage.traces.put(putInput);
+
+    if (linkExecutionId) {
+      deps.storage.traces.linkExecution({
+        traceId: record.traceId,
+        executionId: linkExecutionId,
+        kind: "w3c-trace",
+        confidence: 1.0,
+      });
+    }
+    if (linkAgentRunId) {
+      deps.storage.traces.linkAgentRun({
+        traceId: record.traceId,
+        agentRunId: linkAgentRunId,
+        kind: "w3c-trace",
+        confidence: 1.0,
+      });
+    }
+    // Late-link: any Execution already stashed with this traceId from a
+    // traceparent header seen before this trace was ingested.
+    for (const exec of deps.storage.executions.listByTraceId(record.traceId)) {
+      deps.storage.traces.linkExecution({
+        traceId: record.traceId,
+        executionId: exec.id,
+        kind: "w3c-trace",
+        confidence: 1.0,
+      });
+    }
+
     deps.storage.events.append({
       kind: "trace.ingested",
       payload: { traceId: record.traceId, spanCount: record.spanCount, source: record.source },
@@ -1022,6 +1098,42 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     if (!run) return c.json({ error: `unknown agent_run '${id}'` }, 404);
     const executions = deps.storage.executions.listForAgentRun(id);
     return c.json({ agentRun: run, executions });
+  });
+
+  // ---- Trace correlation reads (Phase L slice 2) ----
+
+  app.get("/api/v1/executions/:id/traces", (c) => {
+    const id = c.req.param("id");
+    const execution = deps.storage.executions.get(id);
+    if (!execution) return c.json({ error: `unknown execution '${id}'` }, 404);
+    const links = deps.storage.traces.listForExecution(id);
+    return c.json({
+      traces: links.map((l) => ({
+        trace: l.trace,
+        correlationKind: l.correlationKind,
+        confidence: l.correlationConfidence,
+      })),
+      ...(links.length === 0 ? { _note: "no correlated traces found for this execution" } : {}),
+    });
+  });
+
+  app.get("/api/v1/agent-runs/:id/timeline", (c) => {
+    const id = c.req.param("id");
+    const agentRun = deps.storage.agentRuns.get(id);
+    if (!agentRun) return c.json({ error: `unknown agent_run '${id}'` }, 404);
+    const executions = deps.storage.executions.listForAgentRun(id);
+    const traceLinks = deps.storage.traces.listForAgentRun(id);
+    const traces = traceLinks.map((l) => ({ trace: l.trace, spans: l.trace.spans }));
+    const overlay = buildAgentRunOverlay(executions, traceLinks);
+    return c.json({
+      agentRun,
+      executions,
+      traces,
+      overlay,
+      ...(traceLinks.length === 0
+        ? { _note: "no correlated traces found for this agent_run" }
+        : {}),
+    });
   });
 
   app.post("/api/v1/executions/compare", async (c) => {
@@ -1103,6 +1215,66 @@ async function sendEvent(
       payload: row.payload,
     }),
   });
+}
+
+// ---- Agent-run timeline overlay (Phase L slice 2) ----
+
+type OverlayEntry =
+  | { at: string; kind: "execution"; ref: { id: string; status: string; capabilityId: string; serverId: string } }
+  | { at: string; kind: "span"; ref: { id: string; traceId: string; name?: string } };
+
+interface SpanLike {
+  spanId?: string;
+  name?: string;
+  startTimeUnixNano?: string | number;
+}
+
+function asSpanLike(value: unknown): SpanLike {
+  if (value && typeof value === "object" && !Array.isArray(value)) {
+    return value as SpanLike;
+  }
+  return {};
+}
+
+// Spans carry OTLP-style nanosecond epoch timestamps as strings; fall back
+// to the trace's own ingest time when a span has none or it's unparseable
+// (never throws — this is display ordering, not protocol validation).
+function spanStartIso(span: SpanLike, fallbackIso: string): string {
+  const raw = span.startTimeUnixNano;
+  if (raw === undefined) return fallbackIso;
+  try {
+    const nanos = typeof raw === "number" ? BigInt(Math.trunc(raw)) : BigInt(raw);
+    const millis = Number(nanos / 1_000_000n);
+    if (!Number.isFinite(millis)) return fallbackIso;
+    return new Date(millis).toISOString();
+  } catch {
+    return fallbackIso;
+  }
+}
+
+function buildAgentRunOverlay(executions: ExecutionRecord[], traceLinks: TraceLink[]): OverlayEntry[] {
+  const overlay: OverlayEntry[] = [];
+  for (const exec of executions) {
+    overlay.push({
+      at: exec.startedAt,
+      kind: "execution",
+      ref: { id: exec.id, status: exec.status, capabilityId: exec.capabilityId, serverId: exec.serverId },
+    });
+  }
+  for (const { trace } of traceLinks) {
+    const spans = Array.isArray(trace.spans) ? trace.spans : [];
+    spans.forEach((raw, idx) => {
+      const span = asSpanLike(raw);
+      const ref: { id: string; traceId: string; name?: string } = {
+        id: span.spanId ?? `${trace.traceId}:${idx}`,
+        traceId: trace.traceId,
+      };
+      if (span.name !== undefined) ref.name = span.name;
+      overlay.push({ at: spanStartIso(span, trace.ingestedAt), kind: "span", ref });
+    });
+  }
+  overlay.sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  return overlay;
 }
 
 function parseSince(value: string | undefined): number {

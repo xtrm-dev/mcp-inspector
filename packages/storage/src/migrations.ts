@@ -220,12 +220,35 @@ ALTER TABLE server_definition ADD COLUMN cwd TEXT;
 ALTER TABLE server_definition ADD COLUMN env_json TEXT;
 `;
 
+// Phase L slice 2: trace <-> Execution / AgentRun correlation. Every link
+// row carries an explicit correlation_kind — never inferred/fabricated
+// (ADR-0001). execution.trace_id lets a tool-call request stash a W3C
+// traceparent-derived traceId at creation time so a trace that ingests
+// later can still be linked back (see trace-correlation.test.ts).
+const V6_TRACE_CORRELATION = `
+CREATE TABLE trace_correlation (
+  trace_id                TEXT NOT NULL,
+  subject_kind             TEXT NOT NULL,
+  subject_id               TEXT NOT NULL,
+  correlation_kind         TEXT NOT NULL,
+  correlation_confidence   REAL NOT NULL,
+  linked_at                TEXT NOT NULL,
+  PRIMARY KEY (trace_id, subject_kind, subject_id),
+  FOREIGN KEY (trace_id) REFERENCES trace(trace_id) ON DELETE CASCADE
+);
+CREATE INDEX idx_trace_correlation_subject ON trace_correlation(subject_kind, subject_id);
+
+ALTER TABLE execution ADD COLUMN trace_id TEXT;
+CREATE INDEX idx_execution_trace_id ON execution(trace_id);
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "schema-v1", sql: V1_SCHEMA },
   { version: 2, name: "agent-run-links", sql: V2_AGENT_RUN_LINKS },
   { version: 3, name: "traces", sql: V3_TRACES },
   { version: 4, name: "source-revision", sql: V4_SOURCE_REVISION },
   { version: 5, name: "stdio-server-fields", sql: V5_STDIO_SERVER_FIELDS },
+  { version: 6, name: "trace-correlation", sql: V6_TRACE_CORRELATION },
 ];
 
 export function checksum(sql: string): string {

@@ -14,7 +14,12 @@
     "@mcp-inspector-x/protocol": "*",
     "@mcp-inspector-x/registry": "*",
     "@mcp-inspector-x/renderers": "*",
+    "@mcp-inspector-x/storage": "*",
     "@mcp-inspector-x/workspace": "*",
+    "@rjsf/core": "^6.8.0",
+    "@rjsf/utils": "^6.8.0",
+    "@rjsf/validator-ajv8": "^6.8.0",
+    "ajv": "^8.20.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
@@ -22,6 +27,7 @@
     "@types/react": "^19.1.0",
     "@types/react-dom": "^19.1.0",
     "@vitejs/plugin-react": "^6.0.0",
+    "jsdom": "^25.0.1",
     "typescript": "^5.9.2",
     "vite": "8.1.5"
   }

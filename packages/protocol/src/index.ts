@@ -22,6 +22,12 @@ export interface McpServerDescriptor {
   transport: "streamable-http" | "stdio";
   url?: string;
   command?: string;
+  /**
+   * Unix domain socket path for an already-spawned stdio MCP child. The
+   * privileged runner owns the spawn (see ADR-0003); the gateway resolves
+   * this via runner.spawnStdioMcp before calling connect().
+   */
+  socketPath?: string;
   protocol: ProtocolNegotiation;
   /**
    * Optional bearer token to send on every request. Resolved by the gateway

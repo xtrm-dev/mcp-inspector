@@ -2,6 +2,7 @@ import {
   Client,
   StreamableHTTPClientTransport,
   isInputRequiredResult,
+  type Transport,
 } from "@modelcontextprotocol/client";
 import {
   MODERN_PROTOCOL_VERSION,
@@ -23,7 +24,7 @@ import {
 
 interface Session {
   client: Client;
-  transport: StreamableHTTPClientTransport;
+  transport: Transport;
 }
 
 const CLIENT_INFO = { name: "mcp-inspector-x", version: "0.0.0" } as const;
@@ -31,10 +32,12 @@ const CLIENT_INFO = { name: "mcp-inspector-x", version: "0.0.0" } as const;
 /**
  * Live @modelcontextprotocol/client v2 implementation of McpClientAdapter.
  *
- * Slice-1 scope (per epic in issue): streamable-http only, single-round
- * tools/call, evidence populated from negotiated era + response _meta.
+ * Supports streamable-http (SDK-owned HTTP transport) and stdio (a UDS
+ * transport over a socket the privileged runner already spawned the child
+ * behind — see ADR-0003), single-round tools/call, evidence populated from
+ * negotiated era + response _meta.
  *
- * ponytail: stdio, MRTR/input_required, Tasks extension, streaming/notifications,
+ * ponytail: MRTR/input_required, Tasks extension, streaming/notifications,
  * resources/prompts, auth pass-through are deferred to later slices — extend the
  * McpClientAdapter interface (and bump protocolAdapterContractVersion) when they land.
  */
@@ -43,20 +46,44 @@ export function createSdkAdapter(): McpClientAdapter {
 
   const adapter: McpClientAdapter = {
     async connect(descriptor: McpServerDescriptor): Promise<ProtocolNegotiation> {
-      if (descriptor.transport !== "streamable-http") {
+      if (descriptor.transport !== "streamable-http" && descriptor.transport !== "stdio") {
         throw new Error(
           `sdk-adapter: transport '${descriptor.transport}' not implemented yet`,
-        );
-      }
-      if (!descriptor.url) {
-        throw new Error(
-          `sdk-adapter: streamable-http descriptor '${descriptor.id}' requires 'url'`,
         );
       }
       if (sessions.has(descriptor.id)) {
         throw new Error(
           `sdk-adapter: session '${descriptor.id}' already connected; call disconnect first`,
         );
+      }
+
+      let transport: Transport;
+      if (descriptor.transport === "streamable-http") {
+        if (!descriptor.url) {
+          throw new Error(
+            `sdk-adapter: streamable-http descriptor '${descriptor.id}' requires 'url'`,
+          );
+        }
+        const transportOpts: ConstructorParameters<typeof StreamableHTTPClientTransport>[1] = {};
+        if (descriptor.bearerToken !== undefined) {
+          const token = descriptor.bearerToken;
+          transportOpts.authProvider = { token: async () => token };
+        }
+        transport = new StreamableHTTPClientTransport(new URL(descriptor.url), transportOpts);
+      } else {
+        // stdio: the child was already spawned by the privileged runner
+        // (ADR-0003); we just speak line-delimited JSON-RPC over the UDS it
+        // handed back.
+        if (!descriptor.socketPath) {
+          throw new Error(
+            `sdk-adapter: stdio descriptor '${descriptor.id}' requires 'socketPath' (spawn via runner.spawnStdioMcp first)`,
+          );
+        }
+        // Dynamic import keeps `node:net` out of apps/web's bundle — the
+        // stdio branch is unreachable in the browser (browser never opens a
+        // UDS descriptor) so this module is never loaded there.
+        const { UdsLineTransport } = await import("./sdk-adapter-uds");
+        transport = new UdsLineTransport(descriptor.socketPath);
       }
 
       const policy = descriptor.protocol.policy;
@@ -67,12 +94,6 @@ export function createSdkAdapter(): McpClientAdapter {
             ? ({ mode: { pin: MODERN_PROTOCOL_VERSION } } as const)
             : ({ mode: "auto" } as const);
 
-      const transportOpts: ConstructorParameters<typeof StreamableHTTPClientTransport>[1] = {};
-      if (descriptor.bearerToken !== undefined) {
-        const token = descriptor.bearerToken;
-        transportOpts.authProvider = { token: async () => token };
-      }
-      const transport = new StreamableHTTPClientTransport(new URL(descriptor.url), transportOpts);
       const client = new Client(CLIENT_INFO, {
         // Advertise:
         //   - elicitation.form → servers may return input_required results

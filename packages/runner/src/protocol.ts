@@ -131,10 +131,31 @@ export interface RunnerSpawnSyncResult {
   timedOut: boolean;
 }
 
+export interface RunnerSpawnStdioMcpParams {
+  command: string;
+  args?: string[];
+  cwd?: string;
+  env?: Record<string, string>;
+  timeoutMs?: number;
+}
+export interface RunnerSpawnStdioMcpResult {
+  sessionId: string;
+  socketPath: string;
+}
+
+export interface RunnerCloseStdioMcpParams {
+  sessionId: string;
+}
+export interface RunnerCloseStdioMcpResult {
+  closed: true;
+}
+
 export type RunnerMethodMap = {
   "runner.authenticate": { params: RunnerAuthParams; result: RunnerAuthResult };
   "runner.ping": { params: Record<string, never>; result: RunnerPingResult };
   "runner.spawnSync": { params: RunnerSpawnSyncParams; result: RunnerSpawnSyncResult };
+  "runner.spawnStdioMcp": { params: RunnerSpawnStdioMcpParams; result: RunnerSpawnStdioMcpResult };
+  "runner.closeStdioMcp": { params: RunnerCloseStdioMcpParams; result: RunnerCloseStdioMcpResult };
 };
 
 export type RunnerMethod = keyof RunnerMethodMap;

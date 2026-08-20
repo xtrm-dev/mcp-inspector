@@ -4,18 +4,26 @@ import {
   type ProtocolNegotiation,
   type ProtocolEraPolicy,
 } from "@mcp-inspector-x/protocol";
+import type { RunnerClient, RunnerSpawnStdioMcpParams } from "@mcp-inspector-x/runner";
 import type { ServerDefinition, Storage } from "@mcp-inspector-x/storage";
 import type { SecretsRegistry } from "./secrets";
 
 export interface ServerBinding {
   descriptor: McpServerDescriptor;
   negotiation: ProtocolNegotiation;
+  // Set only for transport:"stdio" bindings — the privileged runner's
+  // session id, needed so disconnect() can call runner.closeStdioMcp.
+  runnerSessionId?: string;
 }
 
 export interface ServerManagerOptions {
   storage: Storage;
   adapter: McpClientAdapter;
   secrets: SecretsRegistry;
+  // Required for transport:"stdio" servers — the runner is the only thing
+  // allowed to spawn the child MCP process (ADR-0003). Omit it and any
+  // stdio connect() attempt fails fast with a clear error.
+  runnerClient?: RunnerClient;
 }
 
 export interface ServerManager {
@@ -37,7 +45,7 @@ export interface ConnectionTestResult {
 }
 
 export function createServerManager(options: ServerManagerOptions): ServerManager {
-  const { storage, adapter, secrets } = options;
+  const { storage, adapter, secrets, runnerClient } = options;
   const bindings = new Map<string, ServerBinding>();
 
   function ensureDescriptor(def: ServerDefinition): McpServerDescriptor {
@@ -46,6 +54,9 @@ export function createServerManager(options: ServerManagerOptions): ServerManage
         `server '${def.id}': transport '${def.transport}' not supported by the current SDK adapter`,
       );
     }
+    if (def.transport === "stdio" && !def.command) {
+      throw new Error(`server '${def.id}': stdio transport requires 'command'`);
+    }
     const desc: McpServerDescriptor = {
       id: def.id,
       displayName: def.displayName,
@@ -53,6 +64,7 @@ export function createServerManager(options: ServerManagerOptions): ServerManage
       protocol: { policy: def.protocolPolicy as ProtocolEraPolicy },
     };
     if (def.endpoint !== null) desc.url = def.endpoint;
+    if (def.command !== null) desc.command = def.command;
     if (def.credentialRefId !== null) {
       // Resolving here surfaces a clear pre-connect error if the credential is
       // missing, instead of failing inside the SDK transport with a 401.
@@ -69,8 +81,38 @@ export function createServerManager(options: ServerManagerOptions): ServerManage
       throw new Error(`server '${definition.id}' is disabled`);
     }
     const descriptor = ensureDescriptor(definition);
-    const negotiation = await adapter.connect(descriptor);
+
+    // Stdio MCP is spawned by the privileged runner, never here (ADR-0003).
+    // The runner hands back a UDS the SDK adapter speaks line-delimited
+    // JSON-RPC over — see packages/protocol/src/sdk-adapter.ts.
+    let runnerSessionId: string | undefined;
+    if (definition.transport === "stdio") {
+      if (!runnerClient) {
+        throw new Error(
+          `server '${definition.id}': stdio transport requires a privileged runner (none configured on this ServerManager)`,
+        );
+      }
+      const spawnParams: RunnerSpawnStdioMcpParams = { command: definition.command! };
+      if (definition.args) spawnParams.args = definition.args;
+      if (definition.cwd) spawnParams.cwd = definition.cwd;
+      if (definition.env) spawnParams.env = definition.env;
+      const spawned = await runnerClient.spawnStdioMcp(spawnParams);
+      runnerSessionId = spawned.sessionId;
+      descriptor.socketPath = spawned.socketPath;
+    }
+
+    let negotiation: ProtocolNegotiation;
+    try {
+      negotiation = await adapter.connect(descriptor);
+    } catch (err) {
+      if (runnerSessionId !== undefined && runnerClient) {
+        await runnerClient.closeStdioMcp({ sessionId: runnerSessionId }).catch(() => {});
+      }
+      throw err;
+    }
+
     const binding: ServerBinding = { descriptor, negotiation };
+    if (runnerSessionId !== undefined) binding.runnerSessionId = runnerSessionId;
     bindings.set(definition.id, binding);
     storage.events.append({
       kind: "server.connected",
@@ -85,9 +127,13 @@ export function createServerManager(options: ServerManagerOptions): ServerManage
   }
 
   async function disconnect(id: string): Promise<void> {
-    if (!bindings.has(id)) return;
+    const binding = bindings.get(id);
+    if (!binding) return;
     bindings.delete(id);
     await adapter.disconnect(id).catch(() => {});
+    if (binding.runnerSessionId !== undefined && runnerClient) {
+      await runnerClient.closeStdioMcp({ sessionId: binding.runnerSessionId }).catch(() => {});
+    }
     storage.events.append({ kind: "server.disconnected", payload: { serverId: id } });
   }
 
@@ -148,11 +194,13 @@ export function createServerManager(options: ServerManagerOptions): ServerManage
         };
       }
     }
-    // Stdio test-connection requires runner.spawnStdioMcp + MCP handshake —
-    // that lands in Phase B slice 2. Report explicitly rather than lying.
+    // ponytail: connect()/disconnect() prove the stdio path end-to-end; a
+    // side-channel probe that spawns+tears down without leaving a binding
+    // is a separate concern from this slice. Report explicitly rather than
+    // silently reporting "reachable".
     return {
       reachable: false,
-      message: "stdio test-connection not implemented until Phase B slice 2 (runner.spawnStdioMcp)",
+      message: "stdio test-connection not implemented (use connect/disconnect to probe)",
       transport: definition.transport,
       durationMs: 0,
     };

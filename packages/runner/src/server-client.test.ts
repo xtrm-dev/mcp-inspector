@@ -138,4 +138,72 @@ describe("runner server ↔ client (unix domain socket + shared-secret auth)", (
       await client.close();
     }
   });
+
+  describe("runner.spawnStdioMcp / runner.closeStdioMcp (byte pump for a runner-spawned child)", () => {
+    it("pumps raw bytes socket<->child.stdin/stdout, then closeStdioMcp kills the child and unlinks the socket", async () => {
+      const client = await connectRunnerClient({ socketPath, tokenPath });
+      try {
+        const { sessionId, socketPath: pumpSocketPath } = await client.spawnStdioMcp({
+          command: process.execPath,
+          // A trivial echo child stands in for an MCP server: the runner's
+          // job here is only to pump bytes, not to understand them.
+          args: ["-e", "process.stdin.pipe(process.stdout)"],
+        });
+        expect(existsSync(pumpSocketPath)).toBe(true);
+
+        const { connect } = await import("node:net");
+        const pumpSocket = await new Promise<import("node:net").Socket>((resolve, reject) => {
+          const s = connect(pumpSocketPath);
+          s.once("connect", () => resolve(s));
+          s.once("error", reject);
+        });
+
+        const echoed = new Promise<string>((resolve) => {
+          pumpSocket.once("data", (buf: Buffer) => resolve(buf.toString("utf8")));
+        });
+        pumpSocket.write("hello stdio\n");
+        await expect(echoed).resolves.toBe("hello stdio\n");
+        pumpSocket.end();
+
+        const result = await client.closeStdioMcp({ sessionId });
+        expect(result.closed).toBe(true);
+        expect(existsSync(pumpSocketPath)).toBe(false);
+      } finally {
+        await client.close();
+      }
+    }, 10_000);
+
+    it("closeStdioMcp is idempotent for an unknown sessionId", async () => {
+      const client = await connectRunnerClient({ socketPath, tokenPath });
+      try {
+        const result = await client.closeStdioMcp({ sessionId: "does-not-exist" });
+        expect(result.closed).toBe(true);
+      } finally {
+        await client.close();
+      }
+    });
+
+    it("rejects spawnStdioMcp with a missing command", async () => {
+      const client = await connectRunnerClient({ socketPath, tokenPath });
+      try {
+        await expect(
+          client.spawnStdioMcp({ command: "" }),
+        ).rejects.toMatchObject({ code: ErrorCodes.INVALID_PARAMS });
+      } finally {
+        await client.close();
+      }
+    });
+
+    it("runner shutdown kills any still-live stdio-MCP sessions", async () => {
+      const client = await connectRunnerClient({ socketPath, tokenPath });
+      const { socketPath: pumpSocketPath } = await client.spawnStdioMcp({
+        command: process.execPath,
+        args: ["-e", "setInterval(() => {}, 1000)"],
+      });
+      expect(existsSync(pumpSocketPath)).toBe(true);
+      await client.close();
+      await server.close();
+      expect(existsSync(pumpSocketPath)).toBe(false);
+    }, 10_000);
+  });
 });

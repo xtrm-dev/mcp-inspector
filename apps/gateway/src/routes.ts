@@ -25,16 +25,25 @@ export interface GatewayDeps {
   secrets: SecretsRegistry;
 }
 
-// SDK adapter today supports streamable-http; stdio lands when Phase B slice 2
-// wires runner.spawnStdioMcp. Storage schema is broader for forward compat.
 const TransportSchema = z.enum(["streamable-http", "stdio"]);
 const PolicySchema = z.enum(["auto", "modern", "legacy"]);
+// Stdio launch parameters — spawned by the privileged runner, never the
+// gateway (ADR-0003). command is required for transport:"stdio"; the
+// others default to the runner's own conventions (no args, inherited cwd,
+// inherited + overlaid env).
+const StdioArgsSchema = z.array(z.string()).optional();
+const StdioCwdSchema = z.string().min(1).optional();
+const StdioEnvSchema = z.record(z.string(), z.string()).optional();
 
 const CreateServerSchema = z.object({
   id: z.string().min(1).max(128).optional(),
   displayName: z.string().min(1).max(200),
   transport: TransportSchema,
   endpoint: z.string().min(1).nullable().optional(),
+  command: z.string().min(1).optional(),
+  args: StdioArgsSchema,
+  cwd: StdioCwdSchema,
+  env: StdioEnvSchema,
   protocolPolicy: PolicySchema.optional(),
   disabled: z.boolean().optional(),
   credentialRefId: z.string().nullable().optional(),
@@ -86,6 +95,10 @@ const UpdateServerSchema = z.object({
   displayName: z.string().min(1).max(200).optional(),
   transport: TransportSchema.optional(),
   endpoint: z.string().min(1).nullable().optional(),
+  command: z.string().min(1).optional(),
+  args: StdioArgsSchema,
+  cwd: StdioCwdSchema,
+  env: StdioEnvSchema,
   protocolPolicy: PolicySchema.optional(),
   disabled: z.boolean().optional(),
   credentialRefId: z.string().nullable().optional(),
@@ -206,6 +219,10 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       displayName: body.displayName,
       transport: body.transport,
       endpoint: body.endpoint ?? null,
+      command: body.command ?? null,
+      args: body.args ?? null,
+      cwd: body.cwd ?? null,
+      env: body.env ?? null,
       protocolPolicy: body.protocolPolicy ?? "auto",
       disabled: body.disabled ?? false,
       credentialRefId: body.credentialRefId ?? null,
@@ -262,6 +279,10 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     const materialChange =
       parse.data.transport !== undefined ||
       parse.data.endpoint !== undefined ||
+      parse.data.command !== undefined ||
+      parse.data.args !== undefined ||
+      parse.data.cwd !== undefined ||
+      parse.data.env !== undefined ||
       parse.data.protocolPolicy !== undefined ||
       parse.data.disabled === true;
     if (materialChange) {

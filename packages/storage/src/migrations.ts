@@ -165,8 +165,56 @@ CREATE TABLE execution_event (
 CREATE INDEX idx_event_execution ON execution_event(execution_id, seq);
 `;
 
+// Phase L slice 1: link Executions to a CaptureSession + AgentRun so a
+// multi-node workspace run (or later, a captured external-agent session)
+// can be walked as one causal group.
+const V2_AGENT_RUN_LINKS = `
+ALTER TABLE execution ADD COLUMN capture_session_id TEXT
+  REFERENCES capture_session(id) ON DELETE SET NULL;
+ALTER TABLE execution ADD COLUMN agent_run_id TEXT
+  REFERENCES agent_run(id) ON DELETE SET NULL;
+CREATE INDEX idx_execution_agent_run ON execution(agent_run_id, started_at DESC);
+CREATE INDEX idx_execution_capture_session ON execution(capture_session_id, started_at DESC);
+`;
+
+// Phase M slice 1: minimal trace table for ingested runtime traces. Each
+// record carries a raw JSON blob of spans (OTLP-shaped later); AgentRun
+// linkage lives in the correlation_kind='w3c-trace' path and is populated
+// in Phase M slice 2.
+const V3_TRACES = `
+CREATE TABLE trace (
+  id            TEXT PRIMARY KEY,
+  trace_id      TEXT NOT NULL UNIQUE,
+  span_count    INTEGER NOT NULL,
+  spans_json    TEXT NOT NULL,
+  ingested_at   TEXT NOT NULL,
+  source        TEXT
+);
+CREATE INDEX idx_trace_ingested ON trace(ingested_at DESC);
+`;
+
+// Phase M slice 2: source-intelligence substrate. Every deployed capability
+// is tied to an explicit source revision — never silently to repository main.
+// The indexer + snippet retrieval land with Phase M slice 3+.
+const V4_SOURCE_REVISION = `
+CREATE TABLE source_revision (
+  id                TEXT PRIMARY KEY,
+  repository_ref    TEXT NOT NULL,
+  revision_hash     TEXT NOT NULL,
+  branch            TEXT,
+  short_sha         TEXT,
+  registered_at     TEXT NOT NULL,
+  metadata_json     TEXT,
+  UNIQUE (repository_ref, revision_hash)
+);
+CREATE INDEX idx_source_revision_repo ON source_revision(repository_ref, registered_at DESC);
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "schema-v1", sql: V1_SCHEMA },
+  { version: 2, name: "agent-run-links", sql: V2_AGENT_RUN_LINKS },
+  { version: 3, name: "traces", sql: V3_TRACES },
+  { version: 4, name: "source-revision", sql: V4_SOURCE_REVISION },
 ];
 
 export function checksum(sql: string): string {

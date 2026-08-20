@@ -23,6 +23,12 @@ export interface McpServerDescriptor {
   url?: string;
   command?: string;
   protocol: ProtocolNegotiation;
+  /**
+   * Optional bearer token to send on every request. Resolved by the gateway
+   * from a CredentialRef before connect; never persisted on the descriptor
+   * itself and never surfaced back to callers.
+   */
+  bearerToken?: string;
 }
 
 export interface McpToolDefinition {
@@ -48,6 +54,49 @@ export interface ProtocolEvidence {
   extensions?: Record<string, JsonValue>;
 }
 
+export interface McpResourceDefinition {
+  uri: string;
+  name?: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+  annotations?: Record<string, JsonValue>;
+}
+
+export interface McpResourceTemplateDefinition {
+  uriTemplate: string;
+  name?: string;
+  title?: string;
+  description?: string;
+  mimeType?: string;
+  annotations?: Record<string, JsonValue>;
+}
+
+export interface McpResourceContent {
+  uri: string;
+  mimeType?: string;
+  text?: string;
+  blob?: string; // base64
+}
+
+export interface McpPromptArgumentDefinition {
+  name: string;
+  description?: string;
+  required?: boolean;
+}
+
+export interface McpPromptDefinition {
+  name: string;
+  title?: string;
+  description?: string;
+  arguments?: McpPromptArgumentDefinition[];
+}
+
+export interface McpPromptMessage {
+  role: string;
+  content: JsonValue;
+}
+
 export interface McpClientAdapter {
   connect(server: McpServerDescriptor): Promise<ProtocolNegotiation>;
   listTools(serverId: string): Promise<McpToolDefinition[]>;
@@ -57,6 +106,18 @@ export interface McpClientAdapter {
     arguments: JsonObject;
     signal?: AbortSignal;
   }): Promise<{ value: JsonValue; evidence: ProtocolEvidence }>;
+  listResources(serverId: string): Promise<McpResourceDefinition[]>;
+  listResourceTemplates(serverId: string): Promise<McpResourceTemplateDefinition[]>;
+  readResource(input: { serverId: string; uri: string }): Promise<{
+    contents: McpResourceContent[];
+    evidence: ProtocolEvidence;
+  }>;
+  listPrompts(serverId: string): Promise<McpPromptDefinition[]>;
+  getPrompt(input: { serverId: string; name: string; arguments?: JsonObject }): Promise<{
+    messages: McpPromptMessage[];
+    description?: string;
+    evidence: ProtocolEvidence;
+  }>;
   disconnect(serverId: string): Promise<void>;
 }
 
@@ -65,7 +126,7 @@ export interface McpClientAdapter {
  * after its modern-era behavior is covered by conformance tests; product layers
  * depend on this interface rather than SDK-specific lifecycle details.
  */
-export const protocolAdapterContractVersion = 2 as const;
+export const protocolAdapterContractVersion = 3 as const;
 
 /**
  * Tasks extension key. Client opts in by advertising this in

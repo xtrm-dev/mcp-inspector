@@ -30,6 +30,7 @@ export {
   createAgentRunRepository,
   createTraceRepository,
   createSourceRevisionRepository,
+  createSourceMappingRepository,
   createEventLog,
   type ServerRepository,
   type ServerDefinition,
@@ -74,6 +75,9 @@ export {
   type SourceRevisionRepository,
   type SourceRevision,
   type RegisterSourceRevisionInput,
+  type SourceMappingRepository,
+  type CapabilitySourceMapping,
+  type IndexMappingEntryInput,
   type EventLog,
   type EventRow,
   type AppendEventInput,
@@ -95,6 +99,7 @@ import {
   createAgentRunRepository,
   createTraceRepository,
   createSourceRevisionRepository,
+  createSourceMappingRepository,
   createEventLog,
   type ServerRepository,
   type CredentialRefRepository,
@@ -107,6 +112,7 @@ import {
   type AgentRunRepository,
   type TraceRepository,
   type SourceRevisionRepository,
+  type SourceMappingRepository,
   type EventLog,
 } from "./repositories";
 import { join } from "node:path";
@@ -129,6 +135,7 @@ export interface Storage {
   agentRuns: AgentRunRepository;
   traces: TraceRepository;
   sourceRevisions: SourceRevisionRepository;
+  sourceMappings: SourceMappingRepository;
   events: EventLog;
   close(): void;
 }
@@ -155,6 +162,7 @@ export function openStorage(options: StorageOptions): Storage {
     agentRuns: createAgentRunRepository(db),
     traces: createTraceRepository(db),
     sourceRevisions: createSourceRevisionRepository(db),
+    sourceMappings: createSourceMappingRepository(db),
     events: createEventLog(db),
     close() {
       db.close();

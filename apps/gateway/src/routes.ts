@@ -19,6 +19,11 @@ import {
   type JsonRpcRequest,
 } from "@mcp-inspector-x/runner";
 import { connect as netConnect, type Socket } from "node:net";
+import {
+  parseSourceMappingEntry,
+  trimSnippet,
+  type SourceMappingEntry,
+} from "@mcp-inspector-x/source-intelligence";
 import type { ServerManager } from "./servers";
 import type { SecretsRegistry } from "./secrets";
 import { compareExecutions } from "./compare";
@@ -186,6 +191,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         agentRuns: true,
         traceIngestV1: true,
         sourceRevisionsV1: true,
+        capabilitySourceMappingV1: true,
       },
     }),
   );
@@ -733,6 +739,16 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       });
 
       const surface = buildRenderSurface(value, deps.storage.artifacts);
+      const mapping = deps.storage.sourceMappings.findLatestForCapability(capabilityId);
+      const sourceHint = mapping
+        ? {
+            revisionId: mapping.revisionId,
+            filePath: mapping.filePath,
+            symbol: mapping.handlerSymbol,
+            lineStart: mapping.lineStart,
+            lineEnd: mapping.lineEnd,
+          }
+        : null;
       const response: {
         executionId: string;
         evidence: unknown;
@@ -742,6 +758,13 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         value?: unknown;
         artifactRef?: string;
         preview?: RenderPageResult;
+        sourceHint?: {
+          revisionId: string;
+          filePath: string;
+          symbol: string;
+          lineStart: number;
+          lineEnd: number;
+        };
       } = {
         executionId: done.id,
         evidence,
@@ -755,6 +778,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       } else {
         response.value = value;
       }
+      if (sourceHint) response.sourceHint = sourceHint;
       return c.json(response);
     } catch (err) {
       const endedAt = new Date();
@@ -1183,6 +1207,59 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     const rev = deps.storage.sourceRevisions.get(id);
     if (!rev) return c.json({ error: `unknown source_revision '${id}'` }, 404);
     return c.json({ sourceRevision: rev });
+  });
+
+  // Phase M slice 3: capability -> handler symbol map (ingest contract only —
+  // no repo checkout / symbol resolution here, see source-intelligence pkg).
+  app.post("/api/v1/source/revisions/:id/index", async (c) => {
+    const revisionId = c.req.param("id");
+    const revision = deps.storage.sourceRevisions.get(revisionId);
+    if (!revision) return c.json({ error: `unknown source_revision '${revisionId}'` }, 404);
+
+    const body = (await c.req.json().catch(() => null)) as { entries?: unknown } | null;
+    if (!body || !Array.isArray(body.entries) || body.entries.length === 0) {
+      return c.json({ error: "'entries' (non-empty array) required" }, 400);
+    }
+    if (body.entries.length > 1_000) {
+      return c.json({ error: "batch exceeds bounded default of 1,000 entries" }, 400);
+    }
+
+    const entries: SourceMappingEntry[] = [];
+    for (let i = 0; i < body.entries.length; i++) {
+      const parsed = parseSourceMappingEntry(body.entries[i], i);
+      if (!parsed.ok) {
+        return c.json({ error: parsed.error.message, index: parsed.error.index }, 400);
+      }
+      entries.push(parsed.entry);
+    }
+
+    const indexed = deps.storage.sourceMappings.indexBatch(revisionId, entries);
+    deps.storage.events.append({
+      kind: "source.capability.indexed",
+      payload: {
+        revisionId,
+        count: indexed.length,
+        capabilityIds: indexed.map((m) => m.capabilityId),
+      },
+    });
+    return c.json({ indexed }, 201);
+  });
+
+  app.get("/api/v1/source/revisions/:id/capabilities/:capabilityId", (c) => {
+    const revisionId = c.req.param("id");
+    const capabilityId = c.req.param("capabilityId");
+    const revision = deps.storage.sourceRevisions.get(revisionId);
+    if (!revision) return c.json({ error: `unknown source_revision '${revisionId}'` }, 404);
+
+    const mapping = deps.storage.sourceMappings.get(revisionId, capabilityId);
+    if (!mapping) {
+      return c.json(
+        { error: `no source mapping for capability '${capabilityId}' at revision '${revisionId}'` },
+        404,
+      );
+    }
+    const snippet = mapping.snippet !== null ? trimSnippet(mapping.snippet, mapping.lineStart) : null;
+    return c.json({ mapping, snippet });
   });
 
   app.post("/api/v1/traces", async (c) => {

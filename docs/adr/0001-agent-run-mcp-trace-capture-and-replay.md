@@ -1,8 +1,8 @@
 # ADR-0001 — Agent-Run MCP Trace Capture, Correlation, and Replay
 
-**Status:** Accepted  
-**Date:** 2026-08-17  
-**Decision scope:** MCP Inspector X runtime observability, workspace visualization, source intelligence, and diagnostic handoff  
+**Status:** Accepted<br>
+**Date:** 2026-08-17<br>
+**Decision scope:** MCP Inspector X runtime observability, workspace visualization, source intelligence, and diagnostic handoff<br>
 **Protocol target:** MCP `2026-07-28` modern era, with explicit legacy compatibility where supported
 
 ## 1. Context

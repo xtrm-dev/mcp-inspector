@@ -1,10 +1,10 @@
 # MCP Inspector X — Product Requirements Document
 
-**Status:** Canonical / living product requirements  
-**Initial version:** 2026-08-19  
-**Product:** MCP Inspector X  
-**Repository:** `xtrm-dev/mcp-inspector`  
-**Protocol target:** MCP `2026-07-28` modern era, with explicit legacy compatibility where supported  
+**Status:** Canonical / living product requirements<br>
+**Initial version:** 2026-08-19<br>
+**Product:** MCP Inspector X<br>
+**Repository:** `xtrm-dev/mcp-inspector`<br>
+**Protocol target:** MCP `2026-07-28` modern era, with explicit legacy compatibility where supported<br>
 **Architecture decisions:** [`../architecture.md`](../architecture.md), [`../adr/0001-agent-run-mcp-trace-capture-and-replay.md`](../adr/0001-agent-run-mcp-trace-capture-and-replay.md), [`../adr/0002-modern-mcp-trace-context-and-local-stdio-capture.md`](../adr/0002-modern-mcp-trace-context-and-local-stdio-capture.md)
 
 ---

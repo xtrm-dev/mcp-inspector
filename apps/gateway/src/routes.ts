@@ -1,11 +1,13 @@
 import { Hono } from "hono";
 import { cors } from "hono/cors";
+import { streamSSE } from "hono/streaming";
 import {
   MODERN_PROTOCOL_VERSION,
   type McpClientAdapter,
   type McpServerDescriptor,
   type ProtocolNegotiation,
 } from "@mcp-inspector-x/protocol";
+import type { Storage, EventRow } from "@mcp-inspector-x/storage";
 
 export interface ServerBinding {
   descriptor: McpServerDescriptor;
@@ -15,6 +17,7 @@ export interface ServerBinding {
 export interface GatewayDeps {
   adapter: McpClientAdapter;
   servers: ServerBinding[];
+  storage: Storage;
 }
 
 /**
@@ -24,9 +27,9 @@ export interface GatewayDeps {
 export function buildGatewayApp(deps: GatewayDeps): Hono {
   const app = new Hono();
 
-  // Web dev origin (:5174) and same-origin production. Adjust when adding a
-  // hosted deploy; the current UI is dev-only.
   app.use("*", cors({ origin: (o) => o ?? "*" }));
+
+  // ---- Legacy routes (kept for one PR while UI (#17) transitions to /api/v1) ----
 
   app.get("/health", (c) =>
     c.json({
@@ -103,7 +106,96 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     }
   });
 
+  // ---- /api/v1/* — versioned surface backed by durable storage ----
+
+  app.get("/api/v1/health", (c) =>
+    c.json({
+      status: "ok",
+      service: "mcp-inspector-x-gateway",
+      apiVersion: "v1",
+      protocolTarget: MODERN_PROTOCOL_VERSION,
+    }),
+  );
+
+  app.get("/api/v1/servers", (c) => {
+    const rows = deps.storage.servers.list();
+    return c.json({
+      servers: rows.map((s) => ({
+        id: s.id,
+        displayName: s.displayName,
+        transport: s.transport,
+        endpoint: s.endpoint,
+        protocolPolicy: s.protocolPolicy,
+        disabled: s.disabled,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+      })),
+    });
+  });
+
+  // Resumable SSE stream of execution/evidence/lifecycle events.
+  // Reconnecting clients pass Last-Event-ID (the last-seen seq); the server
+  // replays any rows > sinceSeq from the durable log, then attaches to live.
+  app.get("/api/v1/events", (c) => {
+    const lastIdHeader = c.req.header("last-event-id");
+    const sinceQuery = c.req.query("since");
+    const sinceSeq = parseSince(lastIdHeader ?? sinceQuery);
+
+    return streamSSE(c, async (stream) => {
+      const backlog = deps.storage.events.read({ sinceSeq });
+      for (const row of backlog) {
+        await sendEvent(stream, row);
+      }
+      let latestSeq = backlog.length > 0 ? backlog[backlog.length - 1]!.seq : sinceSeq;
+
+      const pending: EventRow[] = [];
+      const sub = deps.storage.events.subscribe((row) => {
+        if (row.seq <= latestSeq) return;
+        pending.push(row);
+      });
+
+      try {
+        while (!stream.aborted && !stream.closed) {
+          while (pending.length > 0) {
+            const row = pending.shift()!;
+            if (row.seq <= latestSeq) continue;
+            await sendEvent(stream, row);
+            latestSeq = row.seq;
+          }
+          // Coarse-grained tick keeps back-pressure honest. Fine enough for a
+          // control-plane event stream; not a data path.
+          await stream.sleep(250);
+        }
+      } finally {
+        sub.close();
+      }
+    });
+  });
+
   return app;
+}
+
+async function sendEvent(
+  stream: { writeSSE: (msg: { id?: string; event?: string; data: string }) => Promise<void> },
+  row: EventRow,
+): Promise<void> {
+  await stream.writeSSE({
+    id: String(row.seq),
+    event: row.kind,
+    data: JSON.stringify({
+      seq: row.seq,
+      kind: row.kind,
+      executionId: row.executionId,
+      recordedAt: row.recordedAt,
+      payload: row.payload,
+    }),
+  });
+}
+
+function parseSince(value: string | undefined): number {
+  if (!value) return 0;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0;
 }
 
 function errMsg(err: unknown): string {

@@ -1,0 +1,44 @@
+{
+  "schema": "mcp-inspector-x/conformance-evidence/v1",
+  "generatedAt": "2026-08-28T00:18:18.987Z",
+  "mcpRevision": "2026-07-28",
+  "harness": "@modelcontextprotocol/conformance@0.2.0-alpha.11",
+  "clientUnderTest": "dist-package/stage/conformance-client.mjs (packaged, esbuild-bundled — not source tree)",
+  "packagedArtifact": {
+    "tarball": "xtrm-dev-mcp-inspector-x-1.0.0-v1.tgz",
+    "sha256": "ef2e5120e75bc02d021bfa0828b8fde510e1f5edde49a96def4fef5e5befcd99",
+    "sizeBytes": 2386929,
+    "version": "1.0.0-v1"
+  },
+  "negotiatedScope": {
+    "description": "Client-mode conformance against MCP Inspector X's streamable-http SDK adapter. `initialize` is not applicable at 2026-07-28 (folded into request-metadata upstream). Resources/prompts/tasks/MRTR client scenarios and all OAuth scenarios are not yet implemented by apps/conformance-client at this slice — see apps/conformance-client/expected-failures.yml for the itemized baseline and .github/workflows/conformance.yml for the CI required/scoreboard split this mirrors.",
+    "required": [
+      "tools_call"
+    ]
+  },
+  "required": {
+    "scenario": "tools_call",
+    "passed": true,
+    "checks": [
+      {
+        "id": "tool-add-numbers",
+        "name": "ToolAddNumbers",
+        "status": "SUCCESS"
+      },
+      {
+        "id": "wire-schema-valid",
+        "name": "WireSchemaValid",
+        "status": "SUCCESS"
+      }
+    ]
+  },
+  "informational": {
+    "description": "Full 2026-07-28 requirements sweep, no baseline applied. Non-blocking — auth/DPoP/etc. failures are expected (no OAuthProvider wired yet).",
+    "summaryLine": "Total: 22 passed, 74 failed, 0 warnings",
+    "totals": {
+      "passed": 22,
+      "failed": 74,
+      "warnings": 0
+    }
+  }
+}

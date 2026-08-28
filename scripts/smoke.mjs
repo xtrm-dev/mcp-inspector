@@ -91,6 +91,107 @@ const SCENARIOS = [
     },
   },
   {
+    // PRD §36 Scenario D — History/comparison. Runs add_numbers a second
+    // time with different arguments and compares the two executions via the
+    // domain-level /executions/compare route.
+    name: "history/comparison (compare two add_numbers executions)",
+    async run(ctx) {
+      ctx.assert(ctx.state.executionId, "no first-run executionId captured");
+      const second = await ctx.post("/api/v1/servers/demo/tools/add_numbers/call", {
+        arguments: { a: 100, b: 1 },
+      });
+      ctx.assert(second.value?.sum === 101, `expected sum=101, got ${JSON.stringify(second)}`);
+      const cmp = await ctx.post("/api/v1/executions/compare", {
+        leftId: ctx.state.executionId,
+        rightId: second.executionId,
+      });
+      ctx.assert(cmp && (cmp.left || cmp.leftExecution) && (cmp.right || cmp.rightExecution),
+        `expected compare result with left/right sides, got ${JSON.stringify(cmp)}`);
+    },
+  },
+  {
+    // PRD §36 Scenario B — Modern interactive execution (MRTR). Uses the
+    // packaged demo tool `interactive_greet` to round-trip input_required →
+    // input_response under ONE executionId via POST /executions/:id/rounds.
+    name: "MRTR round (interactive_greet: input_required → input_response, same executionId)",
+    async run(ctx) {
+      const initial = await ctx.post("/api/v1/servers/demo/tools/interactive_greet/call", {
+        arguments: {},
+      });
+      ctx.assert(initial.status === "input_required",
+        `expected initial status=input_required, got ${JSON.stringify(initial)}`);
+      ctx.assert(initial.inputRequests && Object.keys(initial.inputRequests).length > 0,
+        `expected inputRequests on the initial round: ${JSON.stringify(initial)}`);
+      const round2 = await ctx.post(`/api/v1/executions/${initial.executionId}/rounds`, {
+        inputResponses: { name: { action: "accept", content: { name: "world" } } },
+      });
+      ctx.assert(round2.status === "complete",
+        `expected round-2 status=complete, got ${JSON.stringify(round2)}`);
+      ctx.assert(round2.executionId === initial.executionId,
+        `expected same executionId across rounds, got ${round2.executionId} vs ${initial.executionId}`);
+      const { rounds } = await ctx.get(`/api/v1/executions/${initial.executionId}`);
+      ctx.assert(rounds.length >= 2,
+        `expected >=2 rounds under one execution, got ${rounds.length}`);
+    },
+  },
+  {
+    // PRD §36 Scenario C — Task-backed operation (domain-layer). Uses the
+    // packaged demo tool `long_running_task` which advertises the tasks
+    // extension and rides polling as taskAction rounds under ONE
+    // executionId. Note: R1 (mcp-inspector-4to) will convert this to real
+    // wire-level tasks/get once the SDK gap is closed.
+    name: "Tasks lifecycle (long_running_task: create → poll → complete under one executionId)",
+    async run(ctx) {
+      const initial = await ctx.post("/api/v1/servers/demo/tools/long_running_task/call", {
+        arguments: {},
+      });
+      ctx.assert(initial.status === "task_working",
+        `expected initial status=task_working, got ${JSON.stringify(initial)}`);
+      ctx.assert(typeof initial.value?.taskId === "string",
+        `expected a taskId in the initial value, got ${JSON.stringify(initial.value)}`);
+
+      let terminal = null;
+      for (let i = 0; i < 8; i += 1) {
+        const poll = await ctx.post(`/api/v1/executions/${initial.executionId}/rounds`, {
+          taskAction: "poll",
+        });
+        ctx.assert(poll.executionId === initial.executionId,
+          `expected polls to stay under one executionId, got ${poll.executionId}`);
+        if (poll.status === "complete") {
+          terminal = poll;
+          break;
+        }
+        ctx.assert(poll.status === "task_working",
+          `unexpected intermediate status ${poll.status}: ${JSON.stringify(poll)}`);
+        await sleep(150);
+      }
+      ctx.assert(terminal && terminal.status === "complete",
+        `task did not reach complete within budget: ${JSON.stringify(terminal)}`);
+      ctx.assert(typeof terminal.value?.result === "number",
+        `expected numeric task result, got ${JSON.stringify(terminal.value)}`);
+    },
+  },
+  {
+    // PRD §36 Scenario C (cancel branch) — cancel a task-backed operation
+    // before it completes, verify the execution transitions to cancelled.
+    name: "Tasks cancel (long_running_task: create → cancel mid-run)",
+    async run(ctx) {
+      const initial = await ctx.post("/api/v1/servers/demo/tools/long_running_task/call", {
+        arguments: {},
+      });
+      ctx.assert(initial.status === "task_working",
+        `expected initial status=task_working, got ${JSON.stringify(initial)}`);
+      const cancelled = await ctx.post(`/api/v1/executions/${initial.executionId}/rounds`, {
+        taskAction: "cancel",
+      });
+      ctx.assert(cancelled.status === "cancelled",
+        `expected status=cancelled, got ${JSON.stringify(cancelled)}`);
+      const detail = await ctx.get(`/api/v1/executions/${initial.executionId}`);
+      ctx.assert(detail.execution.status === "cancelled",
+        `expected persisted execution status=cancelled, got ${JSON.stringify(detail.execution)}`);
+    },
+  },
+  {
     name: "web UI reachable (packaged SPA served by the gateway)",
     async run(ctx) {
       const res = await fetch(`${BASE_URL}/`);

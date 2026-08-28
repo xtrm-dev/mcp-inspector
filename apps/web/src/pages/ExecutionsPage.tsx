@@ -45,6 +45,39 @@ export function ExecutionsPage() {
     }
   }
 
+  // UX-5 slice 2: first-class "failed ↔ last successful" affordance per
+  // dispatch §20. Finds the most recent complete execution of the same
+  // capability as the currently selected failed execution and runs the
+  // structured compare.
+  async function compareWithLastGood() {
+    const failed = executions.find((e) => e.id === selectedId);
+    if (!failed) return;
+    const isFailure = failed.status === "failed" || failed.status === "cancelled";
+    if (!isFailure) {
+      setError("compare-with-last-good is only meaningful on a failed or cancelled execution");
+      return;
+    }
+    try {
+      const res = await listExecutions({ capabilityId: failed.capabilityId });
+      const lastGood = res.executions
+        .filter((e) => e.status === "complete" && e.id !== failed.id)
+        .find(() => true); // list is ordered newest-first per api contract
+      if (!lastGood) {
+        setError(`no prior successful execution of '${failed.capabilityId}' to compare against`);
+        return;
+      }
+      setCompareIds([failed.id, lastGood.id]);
+      setCompareResult(await compareExecutionsApi(failed.id, lastGood.id));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  const selectedExec = executions.find((e) => e.id === selectedId);
+  const selectedIsFailure =
+    selectedExec?.status === "failed" || selectedExec?.status === "cancelled";
+
   return (
     <div className="page" data-testid="executions-page">
       <h2>Execution history</h2>
@@ -57,6 +90,19 @@ export function ExecutionsPage() {
         />
         <button className="button" onClick={runCompare} disabled={!compareIds[0] || !compareIds[1]}>
           Compare selected
+        </button>
+        <button
+          className="button"
+          onClick={compareWithLastGood}
+          disabled={!selectedIsFailure}
+          data-testid="compare-with-last-good"
+          title={
+            selectedIsFailure
+              ? "Compare this failed run with the most recent successful run of the same capability"
+              : "Select a failed or cancelled execution first"
+          }
+        >
+          Compare with last successful
         </button>
       </div>
 

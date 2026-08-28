@@ -260,6 +260,10 @@ const V8_EXECUTION_METADATA_JSON = `
 ALTER TABLE execution ADD COLUMN metadata_json TEXT;
 `;
 
+const V9_HEADER_CREDENTIALS = `
+ALTER TABLE server_definition ADD COLUMN header_credentials_json TEXT;
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "schema-v1", sql: V1_SCHEMA },
   { version: 2, name: "agent-run-links", sql: V2_AGENT_RUN_LINKS },
@@ -269,6 +273,7 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 6, name: "capability-source-mapping", sql: V6_CAPABILITY_SOURCE_MAPPING },
   { version: 7, name: "trace-correlation", sql: V7_TRACE_CORRELATION },
   { version: 8, name: "execution-metadata-json", sql: V8_EXECUTION_METADATA_JSON },
+  { version: 9, name: "server-header-credentials", sql: V9_HEADER_CREDENTIALS },
 ];
 
 export function checksum(sql: string): string {

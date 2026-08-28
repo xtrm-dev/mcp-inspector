@@ -81,6 +81,19 @@ const StdioArgsSchema = z.array(z.string()).optional();
 const StdioCwdSchema = z.string().min(1).optional();
 const StdioEnvSchema = z.record(z.string(), z.string()).optional();
 
+// Header names are HTTP tokens — narrow enough to reject stray control
+// characters, permissive enough to admit vendor-prefixed and lower/upper
+// case forms (X-API-Key, x-mercury-api-key, Authorization, etc.).
+const HeaderNameSchema = z
+  .string()
+  .min(1)
+  .max(64)
+  .regex(/^[A-Za-z0-9!#$%&'*+.^_`|~-]+$/, "invalid HTTP header name");
+const HeaderCredentialsSchema = z
+  .record(HeaderNameSchema, z.string().min(1).max(200))
+  .nullable()
+  .optional();
+
 const CreateServerSchema = z.object({
   id: z.string().min(1).max(128).optional(),
   displayName: z.string().min(1).max(200),
@@ -93,6 +106,7 @@ const CreateServerSchema = z.object({
   protocolPolicy: PolicySchema.optional(),
   disabled: z.boolean().optional(),
   credentialRefId: z.string().nullable().optional(),
+  headerCredentials: HeaderCredentialsSchema,
   connectNow: z.boolean().optional(),
 });
 
@@ -148,6 +162,7 @@ const UpdateServerSchema = z.object({
   protocolPolicy: PolicySchema.optional(),
   disabled: z.boolean().optional(),
   credentialRefId: z.string().nullable().optional(),
+  headerCredentials: HeaderCredentialsSchema,
 });
 
 /**
@@ -337,6 +352,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       protocolPolicy: body.protocolPolicy ?? "auto",
       disabled: body.disabled ?? false,
       credentialRefId: body.credentialRefId ?? null,
+      headerCredentials: body.headerCredentials ?? null,
     };
     if (body.id !== undefined) input.id = body.id;
     const created = body.id
@@ -395,6 +411,8 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
       parse.data.cwd !== undefined ||
       parse.data.env !== undefined ||
       parse.data.protocolPolicy !== undefined ||
+      parse.data.credentialRefId !== undefined ||
+      parse.data.headerCredentials !== undefined ||
       parse.data.disabled === true;
     if (materialChange) {
       await deps.serverManager.reconnectIfConnected(updated).catch(() => {});

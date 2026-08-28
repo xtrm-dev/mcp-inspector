@@ -17,7 +17,9 @@ This document is the V1 release-readiness record required by [PRD §37](product/
 - Phase E slice 3 — schema-driven forms + full `/api/v1/*` SPA (PR #54)
 - Phase I slice 2 — remote MCP OAuth + OS keychain + secrets (PR #53)
 - Phase N — packaging + supervised smoke + official conformance evidence (PR #52)
-- R0 (this slice) — smoke §21.1 coverage expansion + release-gate reconciliation
+- R0 — smoke §21.1 coverage expansion + release-gate reconciliation (PR #56)
+- R0 runner-wiring fix — packaged gateway wires the runner, defaults loopback bind, plus researcher memo (PR #57)
+- R-headers — custom-header credentials (X-API-Key and arbitrary auth headers) for real API-key MCP servers (this slice)
 
 ## Packaging & harnesses
 

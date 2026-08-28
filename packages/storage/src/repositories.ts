@@ -108,6 +108,12 @@ export interface ServerDefinition {
   protocolPolicy: ProtocolPolicy;
   disabled: boolean;
   credentialRefId: string | null;
+  // Map of HTTP header name → credential ref id. Values are resolved to
+  // secret strings by the gateway at connect time (never persisted raw
+  // here). Covers non-Bearer auth headers real MCP servers use
+  // (X-API-Key, X-Mercury-*). Null when no custom headers are configured;
+  // streamable-http only (ignored for stdio).
+  headerCredentials: Record<string, string> | null;
   createdAt: Iso;
   updatedAt: Iso;
 }
@@ -124,6 +130,7 @@ export interface UpsertServerInput {
   protocolPolicy?: ProtocolPolicy;
   disabled?: boolean;
   credentialRefId?: string | null;
+  headerCredentials?: Record<string, string> | null;
 }
 
 interface ServerRow {
@@ -138,6 +145,7 @@ interface ServerRow {
   protocol_policy: string;
   disabled: number;
   credential_ref_id: string | null;
+  header_credentials_json: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -155,6 +163,9 @@ function rowToServer(row: ServerRow): ServerDefinition {
     protocolPolicy: row.protocol_policy as ProtocolPolicy,
     disabled: row.disabled === 1,
     credentialRefId: row.credential_ref_id,
+    headerCredentials: row.header_credentials_json !== null
+      ? (JSON.parse(row.header_credentials_json) as Record<string, string>)
+      : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -172,13 +183,13 @@ export interface ServerRepository {
 export function createServerRepository(db: SqliteDb): ServerRepository {
   const insert = db.prepare(`
     INSERT INTO server_definition
-      (id, display_name, transport, endpoint, command, args_json, cwd, env_json, protocol_policy, disabled, credential_ref_id, created_at, updated_at)
-    VALUES (@id, @display_name, @transport, @endpoint, @command, @args_json, @cwd, @env_json, @protocol_policy, @disabled, @credential_ref_id, @created_at, @updated_at)
+      (id, display_name, transport, endpoint, command, args_json, cwd, env_json, protocol_policy, disabled, credential_ref_id, header_credentials_json, created_at, updated_at)
+    VALUES (@id, @display_name, @transport, @endpoint, @command, @args_json, @cwd, @env_json, @protocol_policy, @disabled, @credential_ref_id, @header_credentials_json, @created_at, @updated_at)
   `);
   const upsert = db.prepare(`
     INSERT INTO server_definition
-      (id, display_name, transport, endpoint, command, args_json, cwd, env_json, protocol_policy, disabled, credential_ref_id, created_at, updated_at)
-    VALUES (@id, @display_name, @transport, @endpoint, @command, @args_json, @cwd, @env_json, @protocol_policy, @disabled, @credential_ref_id, @created_at, @updated_at)
+      (id, display_name, transport, endpoint, command, args_json, cwd, env_json, protocol_policy, disabled, credential_ref_id, header_credentials_json, created_at, updated_at)
+    VALUES (@id, @display_name, @transport, @endpoint, @command, @args_json, @cwd, @env_json, @protocol_policy, @disabled, @credential_ref_id, @header_credentials_json, @created_at, @updated_at)
     ON CONFLICT(id) DO UPDATE SET
       display_name = excluded.display_name,
       transport = excluded.transport,
@@ -190,6 +201,7 @@ export function createServerRepository(db: SqliteDb): ServerRepository {
       protocol_policy = excluded.protocol_policy,
       disabled = excluded.disabled,
       credential_ref_id = excluded.credential_ref_id,
+      header_credentials_json = excluded.header_credentials_json,
       updated_at = excluded.updated_at
   `);
   const getStmt = db.prepare("SELECT * FROM server_definition WHERE id = ?");
@@ -209,6 +221,10 @@ export function createServerRepository(db: SqliteDb): ServerRepository {
       protocol_policy: input.protocolPolicy ?? "auto",
       disabled: input.disabled ? 1 : 0,
       credential_ref_id: input.credentialRefId ?? null,
+      header_credentials_json:
+        input.headerCredentials && Object.keys(input.headerCredentials).length > 0
+          ? JSON.stringify(input.headerCredentials)
+          : null,
       created_at: now,
       updated_at: now,
     };
@@ -248,6 +264,8 @@ export function createServerRepository(db: SqliteDb): ServerRepository {
         disabled: patch.disabled ?? current.disabled,
         credentialRefId:
           patch.credentialRefId !== undefined ? patch.credentialRefId : current.credentialRefId,
+        headerCredentials:
+          patch.headerCredentials !== undefined ? patch.headerCredentials : current.headerCredentials,
       };
       upsert.run(build(merged, id, now));
       return get(id);

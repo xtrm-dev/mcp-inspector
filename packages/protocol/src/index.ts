@@ -46,6 +46,20 @@ export interface McpServerDescriptor {
    * connection.
    */
   oauthProvider?: OAuthClientProvider;
+  /**
+   * Additional static HTTP request headers sent with every request to a
+   * streamable-http MCP server. Populated from resolved credential-ref
+   * values by the gateway at connect time — never persisted raw in the
+   * descriptor's owner (see ServerDefinition.headerCredentials). Header
+   * NAMES are treated as plain strings; header VALUES are secrets and
+   * are registered with SecretsRegistry.known() for redaction.
+   *
+   * Coexists with `bearerToken` (SDK auth flow) and `oauthProvider`
+   * (SDK OAuth flow); those cover Authorization: Bearer specifically,
+   * while this seam covers non-Bearer schemes real MCP servers use
+   * (e.g. X-API-Key, X-Mercury-*). Ignored for stdio.
+   */
+  customHeaders?: Record<string, string>;
 }
 
 export interface McpToolDefinition {

@@ -201,7 +201,9 @@ describe("golden path: add server -> run workspace -> view history -> export pac
     });
     await flush();
 
-    // --- add server ---
+    // --- add server through the preserved administration surface ---
+    click(byTestId("nav-servers"));
+    await flush();
     expect(byTestId("servers-page")).not.toBeNull();
     const nameInput = container.querySelector('input[required]') as HTMLInputElement;
     setNativeValue(nameInput, "Demo Server");
@@ -213,8 +215,8 @@ describe("golden path: add server -> run workspace -> view history -> export pac
     expect(state.servers).toHaveLength(1);
     expect(container.textContent).toContain("Demo Server");
 
-    // --- create + run workspace ---
-    click(byTestId("nav-workspaces"));
+    // --- create + run workspace through the preserved administration surface ---
+    click(byTestId("nav-settings"));
     await flush();
     expect(byTestId("workspaces-page")).not.toBeNull();
 
@@ -244,7 +246,12 @@ describe("golden path: add server -> run workspace -> view history -> export pac
     expect(container.textContent).toContain(state.executions[0]!.capabilityId);
 
     // --- export investigation packet ---
-    click(byTestId("nav-packets"));
+    click(byTestId("nav-settings"));
+    await flush();
+    const packetsTab = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent === "Investigation packets",
+    );
+    click(packetsTab ?? null);
     await flush();
     expect(byTestId("packets-page")).not.toBeNull();
     const packetCheckbox = container.querySelector('input[type="checkbox"]') as HTMLInputElement;

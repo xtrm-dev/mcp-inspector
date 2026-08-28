@@ -307,3 +307,22 @@ textarea { width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, mono
 .packet-cat-excluded { color: #687487; }
 .packet-cat-name { font-weight: 500; }
 .packet-cat-status { font-size: 10.5px; }
+
+/* --- UX-3 Workspace Graph (hand-rolled SVG, no library) --- */
+.workspace-graph { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 400px; }
+.workspace-graph-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; }
+.workspace-graph-actions { display: flex; gap: 6px; }
+.workspace-graph-actions button { height: 26px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-raised); color: #dbe4ef; padding: 0 10px; font-size: 11px; cursor: pointer; }
+.workspace-graph-actions button:hover { background: var(--panel-active); }
+.workspace-graph-canvas { flex: 1; background: #0b0e12; border: 1px solid var(--line); border-radius: 10px; touch-action: none; user-select: none; cursor: grab; }
+.workspace-graph-canvas:active { cursor: grabbing; }
+.workspace-graph-node { cursor: pointer; }
+.workspace-graph-node-body { fill: #11161d; stroke: #303947; stroke-width: 1; transition: stroke .12s; }
+.workspace-graph-node:hover .workspace-graph-node-body { stroke: var(--line-strong); }
+.workspace-graph-node-selected .workspace-graph-node-body { stroke: var(--accent); stroke-width: 1.6; }
+.workspace-graph-node-label { fill: #dbe4ef; font-size: 12px; font-weight: 600; font-family: Inter, ui-sans-serif, -apple-system, sans-serif; }
+.workspace-graph-node-server { fill: #8b95a4; font-size: 10.5px; font-family: Inter, ui-sans-serif, -apple-system, sans-serif; }
+.workspace-graph-status-ok { fill: #3bc996; }
+.workspace-graph-status-warn { fill: #efb75e; }
+.workspace-graph-status-err { fill: #ff6d7c; }
+.workspace-graph-status-idle { fill: #687487; }

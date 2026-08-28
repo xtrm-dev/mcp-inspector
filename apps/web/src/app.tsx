@@ -11,18 +11,26 @@ import {
 } from "./pages";
 import {
   createWorkspace,
+  getExecution,
+  getServerCapabilities,
   getWorkspace,
+  listExecutions,
   listServers,
   listWorkspaces,
   runWorkspaceApi,
+  updateWorkspaceNode,
 } from "./api/client";
 import { parseCapabilityId } from "./api/capability-id";
 import type {
+  ExecutionDetail,
+  ExecutionRecord,
   ServerSummary,
+  WorkspaceNodePresentation,
   WorkspaceNodeRow,
   WorkspaceRow,
   WorkspaceRunResult,
 } from "./api/types";
+import { WorkspaceProjections, type WorkspaceProjection } from "./components/WorkspaceProjections";
 
 const NAV_ITEMS = [
   { id: "workspace", label: "Workspace" },
@@ -45,7 +53,12 @@ export function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceRow | null>(null);
   const [workspaceRefreshKey, setWorkspaceRefreshKey] = useState(0);
   const [nodes, setNodes] = useState<WorkspaceNodeRow[]>([]);
+  const [projection, setProjection] = useState<WorkspaceProjection>("grid");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set());
+  const [executionDetails, setExecutionDetails] = useState<Map<string, ExecutionDetail>>(new Map());
+  const [executionHistory, setExecutionHistory] = useState<Map<string, ExecutionRecord[]>>(new Map());
+  const [descriptions, setDescriptions] = useState<Map<string, string>>(new Map());
   const [runResult, setRunResult] = useState<WorkspaceRunResult | null>(null);
   const [loading, setLoading] = useState(true);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
@@ -75,6 +88,7 @@ export function App() {
       setActiveWorkspace(null);
       setNodes([]);
       setSelectedNodeId(null);
+      setSelectedNodeIds(new Set());
       setWorkspaceLoading(false);
       return;
     }
@@ -83,6 +97,10 @@ export function App() {
     setActiveWorkspace(null);
     setNodes([]);
     setSelectedNodeId(null);
+    setSelectedNodeIds(new Set());
+    setExecutionDetails(new Map());
+    setExecutionHistory(new Map());
+    setDescriptions(new Map());
     setWorkspaceLoading(true);
     getWorkspace(activeWorkspaceId)
       .then((result) => {
@@ -105,8 +123,61 @@ export function App() {
   }, [activeWorkspaceId, workspaceRefreshKey]);
 
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
+  const serversById = useMemo(() => new Map(servers.map((server) => [server.id, server])), [servers]);
   const serverNames = useMemo(() => new Map(servers.map((server) => [server.id, server.displayName])), [servers]);
   const connectedServers = servers.filter((server) => server.connected);
+
+  useEffect(() => {
+    if (!activeWorkspaceId || nodes.length === 0) return;
+    let cancelled = false;
+    const nodeIds = new Set(nodes.map((node) => node.id));
+    const serverIds = [...new Set(nodes.flatMap((node) => node.serverId ? [node.serverId] : []))];
+
+    // ponytail: bounded latest-history scan; add cursor paging when the API exposes it.
+    void Promise.all([
+      listExecutions({ limit: 500 }),
+      Promise.all(serverIds.map(async (serverId) => [serverId, await getServerCapabilities(serverId)] as const)),
+    ]).then(async ([executionResult, capabilitiesByServer]) => {
+      if (cancelled) return;
+      const history = new Map<string, ExecutionRecord[]>();
+      for (const execution of executionResult.executions) {
+        if (execution.workspaceId !== activeWorkspaceId || !execution.workspaceNodeId || !nodeIds.has(execution.workspaceNodeId)) continue;
+        history.set(execution.workspaceNodeId, [...(history.get(execution.workspaceNodeId) ?? []), execution]);
+      }
+      setExecutionHistory(history);
+
+      const details = new Map<string, ExecutionDetail>();
+      await Promise.all([...history].map(async ([nodeId, executions]) => {
+        const latest = executions[0];
+        if (!latest) return;
+        try {
+          details.set(nodeId, await getExecution(latest.id));
+        } catch {
+          // The compact execution row still provides status when detail evidence is unavailable.
+        }
+      }));
+      if (!cancelled) setExecutionDetails(details);
+
+      const docs = new Map<string, string>();
+      for (const node of nodes) {
+        if (!node.serverId || !node.capabilityId) continue;
+        const parsed = parseCapabilityId(node.capabilityId);
+        const capabilities = capabilitiesByServer.find(([serverId]) => serverId === node.serverId)?.[1];
+        if (!parsed || !capabilities) continue;
+        const definition = parsed.type === "tool"
+          ? capabilities.tools.find((item) => item.name === parsed.name)
+          : parsed.type === "prompt"
+            ? capabilities.prompts.find((item) => item.name === parsed.name)
+            : capabilities.resources.find((item) => item.uri === parsed.name || item.name === parsed.name);
+        if (definition?.description) docs.set(node.id, definition.description);
+      }
+      if (!cancelled) setDescriptions(docs);
+    }).catch((reason) => {
+      if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
+    });
+
+    return () => { cancelled = true; };
+  }, [activeWorkspaceId, nodes]);
 
   async function createFirstWorkspace(name: string) {
     setError(null);
@@ -130,16 +201,56 @@ export function App() {
 
   const workspaceReady = activeWorkspace?.id === activeWorkspaceId && !workspaceLoading;
 
-  async function runAll() {
+  async function runNodes(nodeIds?: string[]) {
     if (!activeWorkspaceId || !workspaceReady || nodes.length === 0) return;
     setRunning(true);
     setError(null);
     try {
-      setRunResult(await runWorkspaceApi(activeWorkspaceId, {}));
+      const result = await runWorkspaceApi(activeWorkspaceId, nodeIds ? { nodeIds } : {});
+      setRunResult(result);
+      const settledDetails = await Promise.allSettled(
+        result.nodes.flatMap((node) => node.executionId ? [getExecution(node.executionId)] : []),
+      );
+      const details = settledDetails.flatMap((item) => item.status === "fulfilled" ? [item.value] : []);
+      setExecutionDetails((current) => {
+        const next = new Map(current);
+        for (const detail of details) {
+          if (detail.execution.workspaceNodeId) next.set(detail.execution.workspaceNodeId, detail);
+        }
+        return next;
+      });
+      setExecutionHistory((current) => {
+        const next = new Map(current);
+        for (const detail of details) {
+          const nodeId = detail.execution.workspaceNodeId;
+          if (nodeId) next.set(nodeId, [detail.execution, ...(next.get(nodeId) ?? []).filter((item) => item.id !== detail.execution.id)]);
+        }
+        return next;
+      });
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason));
     } finally {
       setRunning(false);
+    }
+  }
+
+  function toggleSelectedNode(nodeId: string) {
+    setSelectedNodeIds((current) => {
+      const next = new Set(current);
+      if (next.has(nodeId)) next.delete(nodeId); else next.add(nodeId);
+      return next;
+    });
+  }
+
+  async function changePresentation(node: WorkspaceNodeRow, presentation: WorkspaceNodePresentation) {
+    if (!activeWorkspaceId) return;
+    setError(null);
+    try {
+      const { node: updated } = await updateWorkspaceNode(activeWorkspaceId, node.id, { presentation });
+      setNodes((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setSelectedNodeId(updated.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
     }
   }
 
@@ -171,7 +282,7 @@ export function App() {
         </label>
         <div className="topbar-spacer" />
         <span className="protocol-chip">{protocolSummary(connectedServers)}</span>
-        <button className="button primary" onClick={runAll} disabled={!showWorkspace || !workspaceReady || nodes.length === 0 || running}>
+        <button className="button primary" onClick={() => void runNodes()} disabled={!showWorkspace || !workspaceReady || nodes.length === 0 || running}>
           {running ? "Running…" : "Run All"}
         </button>
       </header>
@@ -201,11 +312,22 @@ export function App() {
           <WorkspaceCanvas
             workspace={activeWorkspace}
             nodes={nodes}
-            serverNames={serverNames}
+            servers={serversById}
             selectedNodeId={selectedNodeId}
+            selectedNodeIds={selectedNodeIds}
+            projection={projection}
+            executionDetails={executionDetails}
+            executionHistory={executionHistory}
+            descriptions={descriptions}
+            runResult={runResult}
             loading={loading || workspaceLoading}
+            running={running}
             error={error}
             onSelectNode={setSelectedNodeId}
+            onToggleSelected={toggleSelectedNode}
+            onProjectionChange={setProjection}
+            onPresentationChange={(node, presentation) => void changePresentation(node, presentation)}
+            onRunSelected={() => void runNodes([...selectedNodeIds])}
             onCreateWorkspace={createFirstWorkspace}
             onOpenManager={() => setView("settings")}
           />
@@ -218,7 +340,7 @@ export function App() {
       <footer className="status-footer">
         <span>{activeWorkspace ? activeWorkspace.name : "No workspace"}</span>
         <span>{nodes.length} nodes</span>
-        <span>{selectedNode ? "1 selected" : "0 selected"}</span>
+        <span>{selectedNodeIds.size} selected</span>
         {runResult && <span>{runResult.nodes.filter((node) => node.ok).length} succeeded</span>}
         {runResult && <span>{runResult.nodes.filter((node) => !node.ok).length} failed</span>}
         <span className="topbar-spacer" />
@@ -251,21 +373,43 @@ function NavButton({
 function WorkspaceCanvas({
   workspace,
   nodes,
-  serverNames,
+  servers,
   selectedNodeId,
+  selectedNodeIds,
+  projection,
+  executionDetails,
+  executionHistory,
+  descriptions,
+  runResult,
   loading,
+  running,
   error,
   onSelectNode,
+  onToggleSelected,
+  onProjectionChange,
+  onPresentationChange,
+  onRunSelected,
   onCreateWorkspace,
   onOpenManager,
 }: {
   workspace: WorkspaceRow | null;
   nodes: WorkspaceNodeRow[];
-  serverNames: Map<string, string>;
+  servers: Map<string, ServerSummary>;
   selectedNodeId: string | null;
+  selectedNodeIds: Set<string>;
+  projection: WorkspaceProjection;
+  executionDetails: Map<string, ExecutionDetail>;
+  executionHistory: Map<string, ExecutionRecord[]>;
+  descriptions: Map<string, string>;
+  runResult: WorkspaceRunResult | null;
   loading: boolean;
+  running: boolean;
   error: string | null;
   onSelectNode: (id: string) => void;
+  onToggleSelected: (id: string) => void;
+  onProjectionChange: (projection: WorkspaceProjection) => void;
+  onPresentationChange: (node: WorkspaceNodeRow, presentation: WorkspaceNodePresentation) => void;
+  onRunSelected: () => void;
   onCreateWorkspace: (name: string) => Promise<void>;
   onOpenManager: () => void;
 }) {
@@ -274,11 +418,22 @@ function WorkspaceCanvas({
   return (
     <main className="workspace-canvas" data-testid="workspace-page">
       <div className="workspace-toolbar">
-        <div>
-          <strong>{workspace?.name ?? "Workspace"}</strong>
-          <span className="muted">{nodes.length} inspectable nodes</span>
+        <div className="segmented" aria-label="Workspace projection">
+          {(["grid", "list"] as const).map((item) => (
+            <button
+              key={item}
+              data-testid={`projection-${item}`}
+              className={projection === item ? "active" : ""}
+              aria-pressed={projection === item}
+              onClick={() => onProjectionChange(item)}
+            >
+              {item}
+            </button>
+          ))}
         </div>
+        <span className="muted">{nodes.length} nodes · {selectedNodeIds.size} selected</span>
         <div className="topbar-spacer" />
+        <button data-testid="run-selected" className="button" onClick={onRunSelected} disabled={selectedNodeIds.size === 0 || running}>Run selected</button>
         <button className="button" onClick={onOpenManager}>Manage workspace</button>
       </div>
 
@@ -314,22 +469,20 @@ function WorkspaceCanvas({
           </div>
         )}
         {workspace && nodes.length > 0 && (
-          <section className="node-stage" aria-label="Workspace nodes">
-            {nodes.map((node) => {
-              const capability = node.capabilityId ? parseCapabilityId(node.capabilityId) : null;
-              return (
-                <button
-                  key={node.id}
-                  className={`workspace-node ${selectedNodeId === node.id ? "selected" : ""}`}
-                  onClick={() => onSelectNode(node.id)}
-                >
-                  <span className="node-title">{capability?.name ?? node.capabilityId ?? "Unbound node"}</span>
-                  <span className="node-meta">{node.serverId ? (serverNames.get(node.serverId) ?? node.serverId) : "No server"}</span>
-                  <span className="node-kind">{capability?.type ?? "unbound"}</span>
-                </button>
-              );
-            })}
-          </section>
+          <WorkspaceProjections
+            projection={projection}
+            nodes={nodes}
+            servers={servers}
+            selectedNodeId={selectedNodeId}
+            selectedNodeIds={selectedNodeIds}
+            executionDetails={executionDetails}
+            executionHistory={executionHistory}
+            descriptions={descriptions}
+            runResult={runResult}
+            onSelectNode={onSelectNode}
+            onToggleSelected={onToggleSelected}
+            onPresentationChange={onPresentationChange}
+          />
         )}
       </div>
     </main>

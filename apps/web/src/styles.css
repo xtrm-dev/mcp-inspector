@@ -245,3 +245,65 @@ textarea { width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, mono
   .page { padding: 16px; }
   .status-footer { gap: 7px; }
 }
+
+/* --- UX-4/5/6/7/8 shared components (chips, projection pickers, tables) --- */
+.page-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.page-header h2 { margin: 0; }
+
+.chip { height: 26px; border: 1px solid var(--line); border-radius: 999px; background: transparent; color: #8b95a4; padding: 0 10px; font-size: 11px; cursor: pointer; transition: background .12s, color .12s, border-color .12s; }
+.chip:hover { background: var(--panel-raised); color: #c4cddb; }
+.chip.chip-active { background: var(--panel-active); border-color: var(--accent); color: #e5ebf3; }
+
+.projection-picker { display: flex; gap: 5px; }
+
+/* --- UX-4 Capability Catalog --- */
+.catalog-toolbar { flex-direction: column; align-items: stretch; gap: 10px; padding: 12px 14px; }
+.catalog-search { height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-raised); color: #dbe4ef; width: 100%; max-width: 320px; }
+.catalog-filter-group { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+.catalog-toggle { display: flex; gap: 6px; align-items: center; color: #8b95a4; font-size: 11px; cursor: pointer; }
+.catalog-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+.catalog-table { font-size: 12px; }
+.catalog-table td { vertical-align: top; }
+
+/* --- Modal (AddToWorkspaceModal) --- */
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); display: grid; place-items: center; z-index: 60; }
+.modal-panel { width: min(560px, 92vw); background: #10151c; border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: 0 22px 60px rgba(0, 0, 0, 0.4); padding: 18px; display: flex; flex-direction: column; gap: 12px; }
+.modal-panel h3 { margin: 0; }
+.modal-list { list-style: none; padding: 0; margin: 0; max-height: 180px; overflow: auto; background: #0d1116; border: 1px solid var(--line); border-radius: 8px; padding: 8px; }
+.modal-list li { padding: 4px 0; border-bottom: 1px solid #1a2029; font-size: 12px; }
+.modal-list li:last-child { border-bottom: 0; }
+.modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+.form-status { color: var(--accent); background: rgba(115, 130, 255, 0.08); border: 1px solid rgba(115, 130, 255, 0.28); border-radius: 8px; padding: 8px 10px; font-size: 12px; }
+
+/* --- UX-5 Structured comparison --- */
+.comparison-view { gap: 12px; }
+.comparison-lanes { display: flex; flex-direction: column; gap: 14px; }
+.comparison-lane-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
+.comparison-table td.comparison-label { color: #8b95a4; font-weight: 600; text-transform: uppercase; font-size: 10px; letter-spacing: .06em; white-space: nowrap; }
+.comparison-table td.comparison-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; word-break: break-word; }
+.comparison-table tr.comparison-changed td { background: rgba(239, 183, 94, 0.06); border-left: 2px solid var(--amber, #efb75e); }
+
+/* --- UX-6 Agent Run Timeline --- */
+.agent-timeline { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; }
+.agent-timeline-head { font-size: 11px; }
+.agent-timeline-lanes { display: flex; flex-direction: column; gap: 4px; }
+.agent-timeline-lane { display: grid; grid-template-columns: minmax(160px, 220px) 1fr; gap: 10px; align-items: center; padding: 2px 0; border-bottom: 1px solid #1a2029; }
+.agent-timeline-lane-label { color: #c4cddb; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.agent-timeline-track { position: relative; height: 18px; background: #0d1116; border: 1px solid var(--line); border-radius: 6px; }
+.agent-timeline-mark { position: absolute; top: 3px; width: 8px; height: 12px; margin-left: -4px; border-radius: 3px; }
+.timeline-exec-complete { background: #3bc996; }
+.timeline-exec-failed { background: #ff6d7c; }
+.timeline-exec-active { background: #5ba9ff; }
+.timeline-span { background: #a28cff; }
+
+/* --- UX-8 Packet preview --- */
+.packet-preview { gap: 8px; }
+.packet-category-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 4px 12px; }
+.packet-category-list li { display: flex; justify-content: space-between; gap: 8px; padding: 4px 8px; border: 1px solid transparent; border-radius: 6px; font-size: 11.5px; }
+.packet-cat-included { background: rgba(59, 201, 150, 0.08); border-color: rgba(59, 201, 150, 0.24); }
+.packet-cat-partial { background: rgba(239, 183, 94, 0.08); border-color: rgba(239, 183, 94, 0.24); }
+.packet-cat-missing { background: rgba(255, 109, 124, 0.06); border-color: rgba(255, 109, 124, 0.20); color: #8b95a4; }
+.packet-cat-excluded { color: #687487; }
+.packet-cat-name { font-weight: 500; }
+.packet-cat-status { font-size: 10.5px; }

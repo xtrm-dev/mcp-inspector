@@ -93,6 +93,10 @@ export interface CreateServerInput {
   protocolPolicy?: "auto" | "modern" | "legacy";
   disabled?: boolean;
   credentialRefId?: string | null;
+  // Map of HTTP header name → credential ref id. Streamable-http only.
+  // Values resolve at connect time via the SecretsRegistry and are
+  // redacted across logs/events/packets.
+  headerCredentials?: Record<string, string> | null;
   connectNow?: boolean;
 }
 
@@ -312,6 +316,9 @@ export interface CreateCredentialInput {
   provider: CredentialProvider;
   key: string;
   scope?: string | null;
+  // Inline value for session/os providers. `env` rejects it — the env-var
+  // NAME is the reference; the value comes from the gateway's process env.
+  value?: string;
 }
 
 // ---- Source revisions ----

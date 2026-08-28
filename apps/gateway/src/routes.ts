@@ -149,6 +149,11 @@ const CreateCredentialSchema = z.object({
   provider: CredentialProviderSchema,
   key: z.string().min(1).max(200),
   scope: z.string().max(200).nullable().optional(),
+  // Session and OS providers accept an inline `value` on create so the SPA
+  // "Add server" flow can register+seed a credential in one round trip.
+  // `env` rejects it — the env-var name IS the reference; the value comes
+  // from the gateway process environment (see secrets.ts `put`).
+  value: z.string().min(1).max(4096).optional(),
 });
 
 const UpdateServerSchema = z.object({
@@ -1108,6 +1113,18 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     if (parse.data.id !== undefined) input.id = parse.data.id;
     if (parse.data.scope !== undefined) input.scope = parse.data.scope;
     const created = deps.storage.credentials.create(input);
+    if (parse.data.value !== undefined) {
+      if (parse.data.provider === "env") {
+        return c.json({
+          error: "'env' credentials cannot carry an inline value — set the environment variable named by 'key' instead",
+        }, 400);
+      }
+      try {
+        await deps.secrets.put(created, parse.data.value);
+      } catch (err) {
+        return c.json({ error: err instanceof Error ? err.message : String(err) }, 500);
+      }
+    }
     deps.storage.events.append({
       kind: "credential.created",
       payload: { credentialRefId: created.id, provider: created.provider, key: created.key },

@@ -145,6 +145,24 @@ export function createServerManager(options: ServerManagerOptions): ServerManage
         desc.bearerToken = await secrets.resolve(def.credentialRefId);
       }
     }
+    if (def.headerCredentials && Object.keys(def.headerCredentials).length > 0) {
+      if (def.transport !== "streamable-http") {
+        throw new Error(
+          `server '${def.id}': headerCredentials only apply to streamable-http (transport='${def.transport}')`,
+        );
+      }
+      const resolved: Record<string, string> = {};
+      for (const [header, refId] of Object.entries(def.headerCredentials)) {
+        if (!header.trim()) {
+          throw new Error(`server '${def.id}': header name must not be empty`);
+        }
+        // Pre-resolve so a missing credential surfaces before connect,
+        // and so the secret value is registered with SecretsRegistry for
+        // redaction on logs/packets/events.
+        resolved[header] = await secrets.resolve(refId);
+      }
+      desc.customHeaders = resolved;
+    }
     return desc;
   }
 

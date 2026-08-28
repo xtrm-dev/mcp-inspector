@@ -73,6 +73,12 @@ export function createSdkAdapter(): McpClientAdapter {
           const token = descriptor.bearerToken;
           transportOpts.authProvider = { token: async () => token };
         }
+        if (descriptor.customHeaders && Object.keys(descriptor.customHeaders).length > 0) {
+          // Non-Bearer auth headers (X-API-Key etc.) go through requestInit
+          // so every SDK request carries them, alongside any authProvider
+          // Bearer that a different server might use.
+          transportOpts.requestInit = { headers: { ...descriptor.customHeaders } };
+        }
         transport = new StreamableHTTPClientTransport(new URL(descriptor.url), transportOpts);
       } else {
         // stdio: the child was already spawned by the privileged runner

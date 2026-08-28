@@ -719,7 +719,16 @@ The adapter SHALL follow pagination to produce complete catalog projections whil
 
 ### 13.3 Change/listen behavior
 
-Where modern `subscriptions/listen` or other negotiated change mechanisms are supported, updates create new discovery/change events. The product does not mutate historical capability definitions in place without provenance.
+On a modern `2026-07-28` server, list-change updates arrive through `subscriptions/listen`. The seam SHALL:
+
+- treat each subscription as identified by its `subscriptionId` returned in the acknowledgement;
+- persist the `subscriptionId` and its acknowledgement metadata as evidence, alongside every delta rendered downstream;
+- resume updates after a transient disconnect by **re-listening**, not by resuming an HTTP stream — the modern subscription model has no HTTP-request resumption;
+- create new discovery/change events per update; never mutate a historical capability definition in place without provenance.
+
+The seam MUST NOT advertise `resources/subscribe`, HTTP GET streams, or SSE resumability as modern change delivery. Those are historical mechanisms. Where legacy compatibility requires them, they are quarantined behind the legacy adapter path and MUST NOT contaminate modern claims.
+
+Task status notifications remain out of this seam until SDK #2569 (subscription filter types closed to extension notifications) is resolved upstream; polling via the Tasks-extension raw wire (§17) is the current path.
 
 ### 13.4 Cache behavior
 

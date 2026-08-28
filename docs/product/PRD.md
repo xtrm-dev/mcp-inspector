@@ -257,17 +257,19 @@ The product direction includes:
 
 Where applicable and supported by the negotiated server/client capabilities:
 
-- `server/discover`;
-- per-request protocol metadata;
+- `server/discover` — required server method on a modern `2026-07-28` server; optional client probe (Inspector chooses whether to call it, and surfaces the negotiated capability envelope either way);
+- per-request protocol metadata (`MCP-Protocol-Version` matching body metadata; `Mcp-Method` on every modern POST; `Mcp-Name` for name/URI operations, and for Tasks extension methods `Mcp-Name` carries the `taskId`);
+- `Mcp-Param-*` routing headers when — and only when — a tool declares valid `x-mcp-header` annotations; invalid annotations exclude the tool from `tools/list`;
 - exact client/server identity and capabilities;
 - extension negotiation;
-- `complete` and `input_required` multi-round-trip outcomes;
-- Tasks extension lifecycle;
+- `complete` and `input_required` multi-round-trip outcomes (MRTR — retry is a new independent JSON-RPC request with a new id, not HTTP request resumption; `requestState` is opaque and echoed byte-exact);
+- Tasks extension lifecycle via the real wire methods — `tools/call` result of `resultType: "task"`, then `tasks/get` / `tasks/update` / `tasks/cancel`. Historical `tasks/list` and `tasks/result` are NOT emitted to a `2026-07-28` server. Extension `pollIntervalMs` is honored by the product scheduler (SDK convenience for it is not available and is not required);
 - W3C trace context in MCP metadata;
 - modern Streamable HTTP routing/protocol headers;
 - JSON Schema 2020-12 input/output semantics;
 - pagination and cache metadata where exposed;
-- resource/prompt/tool list changes and subscriptions where supported;
+- `subscriptions/listen` with acknowledgement, subscription id, reconnect-by-re-listen semantics, and per-request notification streams — modern only. Legacy `resources/subscribe`, HTTP GET streams, and SSE resumability are NOT carried forward into modern claims;
+- resource/prompt/tool list changes carried over modern subscriptions where the server advertises them;
 - MCP Apps/extensions where supported by later product phases.
 
 ### 6.5 Conformance language
@@ -655,9 +657,11 @@ Input requests must be rendered according to their schemas/content and allow the
 
 Every round must preserve request state, requested input, provided response, timing, and final outcome as inspectable evidence.
 
-### MRTR-04 — Resume/retry semantics
+### MRTR-04 — Retry semantics on the wire
 
-The UI must accurately represent retry/resume behavior required by the protocol/SDK rather than simulating a new call.
+The UI must accurately represent the retry behavior required by the protocol/SDK rather than simulating a new call.
+
+An MRTR retry is a **new independent JSON-RPC request with a new id**, not a resumption of an earlier HTTP request or protocol session. The client MUST echo the opaque `requestState` returned by the server byte-for-byte, MUST NOT inspect or parse it, and MUST send the round's `inputResponses` alongside. The logical Inspector `Execution` is retained across rounds; the wire request is fresh each time.
 
 ### MRTR-05 — Transport independence
 

@@ -838,20 +838,19 @@ A gateway `TaskSupervisor` SHALL own durable polling/update/cancel state indepen
 
 ### 17.3 State machine
 
-At minimum:
+The extension wire statuses on a modern `2026-07-28` server are:
 
 ```text
-created
-→ polling/working
-→ input_required ↔ updated
-→ complete | failed | cancelled
+working → input_required ↔ updated → completed | failed | cancelled
 ```
+
+`created` MAY exist as an internal persistence state on the Inspector side — the moment the gateway has minted a durable Execution row but before the first observed `tasks/get`/`tools/call` result has classified the task. It MUST NOT be emitted as a task status on the wire, and MUST NOT be presented as a Tasks-extension status to users. UI classification of a Task presented as `created` MUST resolve to one of the wire statuses within one round of evidence, or fail loud.
 
 Task transition events remain under the originating Execution.
 
 ### 17.4 Poll scheduling
 
-Polling uses bounded backoff/interval semantics exposed by the extension/SDK where available. Browser refresh/restart SHALL NOT lose a retained active task; the supervisor resumes eligible polling from persisted state.
+Polling honors the `pollIntervalMs` (and, where present, `ttlMs`) carried on the Tasks-extension response envelope. Ownership of this behavior is on the product scheduler — SDK convenience for it is not required and not assumed. Browser refresh/restart SHALL NOT lose a retained active task; the supervisor resumes eligible polling from persisted state, re-reading `pollIntervalMs` from the last observed evidence.
 
 ### 17.5 Cancellation distinction
 
@@ -1357,7 +1356,17 @@ Expected-failure baselines MUST include a reason and, where applicable, upstream
 
 ### 29.4 Current upstream caveat
 
-As verified on 2026-08-19, the official conformance project has had active issues around final `2026-07-28` scoring/schema/task coverage (including issues #425/#426 in the official repository). Therefore V1 automation SHALL distinguish:
+As verified against `@modelcontextprotocol/conformance@0.2.0-alpha.11` (upstream `74edef3`, 2026-08-17) in the R-researcher memo dated 2026-08-28, the official conformance project has multiple open issues affecting final `2026-07-28` scoring, schema validation and coverage. Currently tracked at minimum:
+
+- #426 — final `2026-07-28` still treated as draft; default Tier runs can score the wrong profile.
+- #425 — earlier scored-profile drift referenced in prior baselines.
+- #424 — core wire-schema validation rejects valid extension `resultType: "task"` envelopes.
+- #422 — pre-registration fixture omits issuer context required by final authorization-server binding.
+- #418 — raw HTTP / inline mocks bypass wire-schema instrumentation (unobserved raw traffic).
+- #439, #440 — MRTR scenario / fixture defects.
+- #461 — bundled everything-server can omit `resultType` on streamed tool responses.
+
+Pin the exact harness and SDK commits per V1 evidence. V1 automation SHALL distinguish:
 
 ```text
 our implementation failure

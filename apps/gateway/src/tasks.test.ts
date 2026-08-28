@@ -4,27 +4,27 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSdkAdapter } from "@mcp-inspector-x/protocol";
 import { openStorage, type Storage } from "@mcp-inspector-x/storage";
-import { startDemoMcp, type DemoMcp } from "./demo-mcp";
+import {
+  getForbiddenTaskMethodsReceived,
+  getTaskMethodsReceived,
+  resetTaskMethodReceipts,
+  startDemoMcp,
+  type DemoMcp,
+} from "./demo-mcp";
 import { buildGatewayApp } from "./routes";
 import { createServerManager, type ServerManager } from "./servers";
 import { createSecretsRegistry, type SecretsRegistry } from "./secrets";
 
-// R1 slice 1 (issue #60): the previous incarnation of this suite drove
-// the fake-tool polling path — the demo `long_running_task` tool was
-// re-invoked on each poll with `{ taskId, cancel }` inside its ordinary
-// arguments, matching the historical simulation that never spoke the
-// Tasks-extension wire. R1 slice 1 replaces that domain-layer path with
-// real `tasks/get` / `tasks/cancel` methods (routes.ts + sdk-adapter.ts).
-//
-// This suite stays skipped until slice 2 (issue #60 follow-up):
-//   - upgrade `demo-mcp.ts` so `long_running_task` returns a real
-//     `resultType: "task"` envelope on first call, and
-//   - wrap the demo HTTP server so raw `tasks/get` / `tasks/cancel`
-//     methods are answered directly (SDK #2598 makes McpServer reject
-//     those method names via its historical-name registry).
-// Slice 2 will also unskip this describe block and add strict-server
-// assertions on the exact wire methods + `Mcp-Name: <taskId>` header.
-describe.skip("Tasks lifecycle persistence (long_running_task) — pending slice-2 demo upgrade", () => {
+// R1 slice 2 (issue #60): the demo HTTP server now intercepts the
+// Tasks-extension raw wire — `tasks/get` / `tasks/update` / `tasks/cancel`
+// are answered directly by the wrap (McpServer refuses those method names
+// under SDK #2598), and every received request is recorded so this suite
+// can assert strict-server behavior: exact wire methods, taskId params,
+// and that historical `tasks/list` / `tasks/result` are NEVER emitted by
+// the seam. The seam under test lives at
+// `packages/protocol/src/sdk-adapter.ts` (getTask / updateTask / cancelTask)
+// and `apps/gateway/src/routes.ts` (task_working continuation branch).
+describe("Tasks lifecycle persistence (long_running_task)", () => {
   let demo: DemoMcp;
   let adapter: ReturnType<typeof createSdkAdapter>;
   let app: ReturnType<typeof buildGatewayApp>;
@@ -34,6 +34,7 @@ describe.skip("Tasks lifecycle persistence (long_running_task) — pending slice
   let dataDir: string;
 
   beforeAll(async () => {
+    resetTaskMethodReceipts();
     dataDir = mkdtempSync(join(tmpdir(), "mix-gateway-tasks-"));
     storage = openStorage({ dataDir });
     demo = await startDemoMcp();
@@ -173,5 +174,25 @@ describe.skip("Tasks lifecycle persistence (long_running_task) — pending slice
       body: JSON.stringify({ taskAction: "poll" }),
     });
     expect(wrongForMrtr.status).toBe(400);
+  });
+
+  // R1 slice 2: strict-server wire assertion. Verifies that the seam
+  // actually spoke the Tasks-extension methods against the server, and
+  // that the historical methods forbidden by the extension were never
+  // emitted under any code path exercised above.
+  it("strict-server: only tasks/get and tasks/cancel reached the wire; tasks/list and tasks/result never did", () => {
+    const received = getTaskMethodsReceived();
+    const methods = received.map((r) => r.method);
+    // At minimum, the two poll+complete flow and the cancel flow contributed
+    // one tasks/get and one tasks/cancel.
+    expect(methods).toContain("tasks/get");
+    expect(methods).toContain("tasks/cancel");
+    // Every received Task method carried a taskId param.
+    for (const r of received) {
+      expect(typeof r.taskId).toBe("string");
+      expect(r.taskId!.length).toBeGreaterThan(0);
+    }
+    // Historical methods must NEVER have been sent by the seam.
+    expect(getForbiddenTaskMethodsReceived()).toHaveLength(0);
   });
 });

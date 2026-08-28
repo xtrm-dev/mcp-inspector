@@ -192,6 +192,32 @@ const SCENARIOS = [
     },
   },
   {
+    // Runner wiring proof (bug mcp-inspector-68e). The packaged gateway
+    // must connect to the supervisor-spawned runner over its UDS and pass
+    // the client into buildGatewayApp/createServerManager. Opening a
+    // stdio-proxy capture session touches BOTH ends of that wiring
+    // (deps.runnerClient in routes.ts + runner.attachCaptureSession) and
+    // will fail fast with "requires a privileged runner" if the boot
+    // regresses again. Also verifies the session enters storage and can
+    // be closed cleanly.
+    name: "runner wiring (stdio-proxy capture session open + list + close)",
+    async run(ctx) {
+      const opened = await ctx.post("/api/v1/capture-sessions/stdio-proxy/open", {
+        note: "smoke-runner-wiring",
+      });
+      ctx.assert(opened.captureSession?.id,
+        `expected captureSession.id, got ${JSON.stringify(opened)}`);
+      const captureId = opened.captureSession.id;
+      const list = await ctx.get("/api/v1/capture-sessions");
+      ctx.assert(Array.isArray(list.captureSessions) &&
+        list.captureSessions.some((s) => s.id === captureId),
+        `capture session not visible in list, got ${JSON.stringify(list)}`);
+      const closed = await ctx.post(`/api/v1/capture-sessions/${captureId}/close`, {});
+      ctx.assert(closed.captureSession?.endedAt,
+        `expected endedAt on closed capture session, got ${JSON.stringify(closed)}`);
+    },
+  },
+  {
     name: "web UI reachable (packaged SPA served by the gateway)",
     async run(ctx) {
       const res = await fetch(`${BASE_URL}/`);

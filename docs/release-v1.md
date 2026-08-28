@@ -42,9 +42,10 @@ The `SCENARIOS` plugin array in `scripts/smoke.mjs` runs against the extracted t
 | 7 | `MRTR round (interactive_greet: input_required → input_response, same executionId)` | B (Modern interactive execution) |
 | 8 | `Tasks lifecycle (long_running_task: create → poll → complete under one executionId)` | C (Task-backed operation) — **domain-layer**, see R1 residual |
 | 9 | `Tasks cancel (long_running_task: create → cancel mid-run)` | C (cancel branch) |
-| 10 | `web UI reachable (packaged SPA served by the gateway)` | UI/frontend |
+| 10 | `runner wiring (stdio-proxy capture session open + list + close)` | STDIO / runner boot proof (regression guard for bug `mcp-inspector-68e`) |
+| 11 | `web UI reachable (packaged SPA served by the gateway)` | UI/frontend |
 
-Last-known result: 10/10 passed against `dist-package/xtrm-dev-mcp-inspector-x-1.0.0-v1.tgz` (sha256 `ef2e5120e75bc02d021bfa0828b8fde510e1f5edde49a96def4fef5e5befcd99`).
+Last-known result: 11/11 pass after the R0-runner-wiring fix landed (`apps/gateway/src/index.ts` now reads `MIX_RUNNER_SOCKET`/`MIX_RUNNER_TOKEN_PATH`, constructs a `RunnerClient`, and passes it to `createServerManager` + `buildGatewayApp`). The packaged gateway also defaults its HTTP bind to `127.0.0.1` (`MIX_HOST` override) so a packaged tarball run on a host with a public IP no longer silently exposes the API — see bug `mcp-inspector-vus`.
 
 ## Conformance evidence
 
@@ -71,7 +72,7 @@ See [`conformance/evidence/`](../conformance/evidence/) for the dated JSON evide
 | Applicable official conformance scenarios passing (claimed behavior) | PARTIAL | Required scenario `tools_call` — 2/2 checks pass (`conformance/evidence/v1-*.json`). Informational sweep — 22 pass / 74 fail, all traceable to R9 conformance-client OAuth gap. |
 | typecheck/tests/build green | PASS | `npm run typecheck && npm test && npm run build`; 266 tests pass |
 | Security scanning baseline | UNKNOWN | `.github/workflows/{gitleaks,osv-scanner,semgrep}.yml` exist; last CI status verified per-PR, not summarized here |
-| Real HTTP and stdio integration tests | PARTIAL | HTTP: PASS (packaged smoke + gateway test suite). stdio: proven at the runner layer (`apps/gateway/src/stdio-mcp.test.ts`, `capture-*.test.ts`); no packaged smoke scenario yet |
+| Real HTTP and stdio integration tests | PASS | HTTP: PASS (packaged smoke + gateway test suite). stdio: PASS at the runner layer (`apps/gateway/src/stdio-mcp.test.ts`, `capture-*.test.ts`); packaged smoke scenario 10 proves runner wiring end-to-end. Real stdio-server-add via `POST /api/v1/servers {transport:"stdio"}` follows the operator runbook. |
 | Real MRTR integration test | PASS | Unit: `apps/gateway/src/mrtr.test.ts`. Packaged smoke: scenario 7 (this document). |
 | Real Tasks lifecycle integration test | PARTIAL | Unit: `apps/gateway/src/tasks.test.ts`. Packaged smoke: scenarios 8–9. Wire-level `tasks/get` NOT yet exercised — see R1. |
 | Persistence migration/compatibility strategy | PASS | `packages/storage` migrations |

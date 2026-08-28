@@ -90,6 +90,12 @@ function click(selector: string) {
   act(() => element.click());
 }
 
+function pointer(selector: string, type: string, x: number, y: number, modifiers: MouseEventInit = {}) {
+  const element = container.querySelector<HTMLElement>(selector);
+  if (!element) throw new Error(`missing ${selector}`);
+  act(() => element.dispatchEvent(new MouseEvent(type, { bubbles: true, clientX: x, clientY: y, ...modifiers })));
+}
+
 describe("workspace capability projections", () => {
   it("projects the same selected node in Grid and List and persists presentation", async () => {
     await act(async () => root.render(<App />));
@@ -129,5 +135,59 @@ describe("workspace capability projections", () => {
 
     expect(storage.workspaceNodes.get("node-echo")?.presentation).toBe("focus");
     expect(container.querySelector('[data-testid="capability-focus-node-echo"]')).not.toBeNull();
+  });
+
+  it("persists the shared Graph selection, snapped positions, viewport, and reset layout", async () => {
+    storage.workspaceNodes.create({
+      id: "node-clock",
+      workspaceId: "ws-cards",
+      serverId: "srv-local",
+      capabilityId: "srv-local::tool::clock",
+      argumentsJson: JSON.stringify({ timezone: "UTC" }),
+    });
+    storage.workspaces.update("ws-cards", {
+      layoutJson: JSON.stringify({
+        futureSlice: { keep: true },
+        projection: "graph",
+        selectedNodeIds: ["node-echo"],
+        graph: {
+          positions: { "node-echo": { x: 40, y: 60 } },
+          viewport: { x: 10, y: 20, scale: 1 },
+          groupBy: "server",
+        },
+      }),
+    });
+
+    await act(async () => root.render(<App />));
+    await flush();
+    await flush();
+
+    expect(container.querySelector('[data-testid="workspace-graph"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="graph-node-node-echo"]')?.textContent).toContain("echo");
+    expect(container.querySelector('[data-testid="graph-node-node-clock"]')?.textContent).toContain("clock");
+    expect(container.querySelectorAll(".workspace-graph-edge")).toHaveLength(0);
+
+    pointer('[data-testid="graph-node-node-clock"]', "pointerdown", 220, 80, { ctrlKey: true });
+    pointer('[data-testid="workspace-graph"]', "pointerup", 220, 80, { ctrlKey: true });
+    expect(container.querySelector('[data-testid="workspace-detail-pane"]')?.textContent).toContain("clock");
+    expect(container.textContent).toContain("2 selected");
+
+    pointer('[data-testid="graph-node-node-echo"]', "pointerdown", 40, 60);
+    pointer('[data-testid="workspace-graph"]', "pointermove", 81, 101);
+    pointer('[data-testid="workspace-graph"]', "pointerup", 81, 101);
+    await flush();
+
+    const moved = JSON.parse(storage.workspaces.get("ws-cards")!.layoutJson);
+    expect(moved.futureSlice).toEqual({ keep: true });
+    expect(moved.projection).toBe("graph");
+    expect(moved.selectedNodeIds).toEqual(expect.arrayContaining(["node-echo", "node-clock"]));
+    expect(moved.graph.positions["node-echo"]).toEqual({ x: 80, y: 100 });
+
+    click('[data-testid="graph-reset"]');
+    await flush();
+
+    const reset = JSON.parse(storage.workspaces.get("ws-cards")!.layoutJson);
+    expect(reset.futureSlice).toEqual({ keep: true });
+    expect(reset.graph.positions["node-echo"]).not.toEqual({ x: 80, y: 100 });
   });
 });

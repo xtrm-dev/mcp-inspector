@@ -81,7 +81,11 @@ describe("workspace-first shell", () => {
     expect(container.textContent).toContain("Durable workspace");
     expect(container.textContent).toContain("Local test server");
     expect(container.textContent).toContain("echo");
-    expect(container.querySelector('[data-testid="workspace-detail-pane"]')?.textContent).toContain("expanded");
+    // The seeded node has presentation:"expanded" — verify the detail pane
+    // rendered the expanded body (the shell affordance flips to "Collapse"
+    // when a node is expanded, and the tab strip is visible).
+    const detailText = container.querySelector('[data-testid="workspace-detail-pane"]')?.textContent ?? "";
+    expect(detailText).toMatch(/Collapse|Parameters|Protocol/);
 
     storage.workspaceNodes.create({
       id: "node-second",

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AgentRunsPage,
   CapabilitiesPage,
@@ -18,6 +18,7 @@ import {
   listServers,
   listWorkspaces,
   runWorkspaceApi,
+  updateWorkspace,
   updateWorkspaceNode,
 } from "./api/client";
 import { parseCapabilityId } from "./api/capability-id";
@@ -30,7 +31,15 @@ import type {
   WorkspaceRow,
   WorkspaceRunResult,
 } from "./api/types";
-import { WorkspaceProjections, type WorkspaceProjection } from "./components/WorkspaceProjections";
+import { CapabilityInspector, WorkspaceProjections, type NodeProjectionProps } from "./components/WorkspaceProjections";
+import {
+  WorkspaceGraph,
+  readWorkspaceLayout,
+  serializeWorkspaceLayout,
+  type GraphLayout,
+  type WorkspaceLayoutState,
+  type WorkspaceProjection,
+} from "./components/WorkspaceGraph";
 
 const NAV_ITEMS = [
   { id: "workspace", label: "Workspace" },
@@ -53,9 +62,10 @@ export function App() {
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceRow | null>(null);
   const [workspaceRefreshKey, setWorkspaceRefreshKey] = useState(0);
   const [nodes, setNodes] = useState<WorkspaceNodeRow[]>([]);
-  const [projection, setProjection] = useState<WorkspaceProjection>("grid");
+  const [workspaceLayout, setWorkspaceLayout] = useState<WorkspaceLayoutState>(() => readWorkspaceLayout("{}"));
+  const workspaceLayoutRef = useRef(workspaceLayout);
+  const layoutSaveRef = useRef<Promise<void>>(Promise.resolve());
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
-  const [selectedNodeIds, setSelectedNodeIds] = useState<Set<string>>(new Set());
   const [executionDetails, setExecutionDetails] = useState<Map<string, ExecutionDetail>>(new Map());
   const [executionHistory, setExecutionHistory] = useState<Map<string, ExecutionRecord[]>>(new Map());
   const [descriptions, setDescriptions] = useState<Map<string, string>>(new Map());
@@ -88,7 +98,7 @@ export function App() {
       setActiveWorkspace(null);
       setNodes([]);
       setSelectedNodeId(null);
-      setSelectedNodeIds(new Set());
+      setWorkspaceLayoutState(readWorkspaceLayout("{}"));
       setWorkspaceLoading(false);
       return;
     }
@@ -97,7 +107,7 @@ export function App() {
     setActiveWorkspace(null);
     setNodes([]);
     setSelectedNodeId(null);
-    setSelectedNodeIds(new Set());
+    setWorkspaceLayoutState(readWorkspaceLayout("{}"));
     setExecutionDetails(new Map());
     setExecutionHistory(new Map());
     setDescriptions(new Map());
@@ -105,11 +115,13 @@ export function App() {
     getWorkspace(activeWorkspaceId)
       .then((result) => {
         if (cancelled) return;
+        const nodeIds = new Set(result.nodes.map((node) => node.id));
+        const layout = readWorkspaceLayout(result.workspace.layoutJson);
+        layout.selectedNodeIds = layout.selectedNodeIds.filter((id) => nodeIds.has(id));
         setActiveWorkspace(result.workspace);
         setNodes(result.nodes);
-        setSelectedNodeId((current) =>
-          current && result.nodes.some((node) => node.id === current) ? current : (result.nodes[0]?.id ?? null),
-        );
+        setWorkspaceLayoutState(layout);
+        setSelectedNodeId(layout.selectedNodeIds[0] ?? result.nodes[0]?.id ?? null);
       })
       .catch((reason) => {
         if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
@@ -123,9 +135,32 @@ export function App() {
   }, [activeWorkspaceId, workspaceRefreshKey]);
 
   const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? null;
+  const selectedNodeIds = useMemo(() => new Set(workspaceLayout.selectedNodeIds), [workspaceLayout.selectedNodeIds]);
+  const projection = workspaceLayout.projection;
   const serversById = useMemo(() => new Map(servers.map((server) => [server.id, server])), [servers]);
-  const serverNames = useMemo(() => new Map(servers.map((server) => [server.id, server.displayName])), [servers]);
   const connectedServers = servers.filter((server) => server.connected);
+
+  function setWorkspaceLayoutState(next: WorkspaceLayoutState) {
+    workspaceLayoutRef.current = next;
+    setWorkspaceLayout(next);
+  }
+
+  function commitWorkspaceLayout(update: (current: WorkspaceLayoutState) => WorkspaceLayoutState) {
+    if (!activeWorkspaceId) return;
+    const workspaceId = activeWorkspaceId;
+    const next = update(workspaceLayoutRef.current);
+    setWorkspaceLayoutState(next);
+    const layoutJson = serializeWorkspaceLayout(next);
+    layoutSaveRef.current = layoutSaveRef.current.then(async () => {
+      try {
+        const { workspace } = await updateWorkspace(workspaceId, { layoutJson });
+        setActiveWorkspace((current) => current?.id === workspaceId ? workspace : current);
+        setWorkspaces((current) => current.map((item) => item.id === workspaceId ? workspace : item));
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+      }
+    });
+  }
 
   useEffect(() => {
     if (!activeWorkspaceId || nodes.length === 0) return;
@@ -235,11 +270,28 @@ export function App() {
   }
 
   function toggleSelectedNode(nodeId: string) {
-    setSelectedNodeIds((current) => {
-      const next = new Set(current);
-      if (next.has(nodeId)) next.delete(nodeId); else next.add(nodeId);
-      return next;
+    commitWorkspaceLayout((current) => {
+      const selected = new Set(current.selectedNodeIds);
+      if (selected.has(nodeId)) selected.delete(nodeId); else selected.add(nodeId);
+      return { ...current, selectedNodeIds: [...selected] };
     });
+  }
+
+  function selectGraphNode(nodeId: string, additive: boolean) {
+    setSelectedNodeId(nodeId);
+    commitWorkspaceLayout((current) => {
+      const selected = additive ? new Set(current.selectedNodeIds) : new Set<string>();
+      if (additive && selected.has(nodeId)) selected.delete(nodeId); else selected.add(nodeId);
+      return { ...current, selectedNodeIds: [...selected] };
+    });
+  }
+
+  function changeProjection(projection: WorkspaceProjection) {
+    commitWorkspaceLayout((current) => ({ ...current, projection }));
+  }
+
+  function changeGraphLayout(graph: GraphLayout) {
+    commitWorkspaceLayout((current) => ({ ...current, graph }));
   }
 
   async function changePresentation(node: WorkspaceNodeRow, presentation: WorkspaceNodePresentation) {
@@ -316,6 +368,7 @@ export function App() {
             selectedNodeId={selectedNodeId}
             selectedNodeIds={selectedNodeIds}
             projection={projection}
+            graphLayout={workspaceLayout.graph}
             executionDetails={executionDetails}
             executionHistory={executionHistory}
             descriptions={descriptions}
@@ -325,13 +378,27 @@ export function App() {
             error={error}
             onSelectNode={setSelectedNodeId}
             onToggleSelected={toggleSelectedNode}
-            onProjectionChange={setProjection}
+            onSelectGraphNode={selectGraphNode}
+            onProjectionChange={changeProjection}
+            onGraphLayoutChange={changeGraphLayout}
             onPresentationChange={(node, presentation) => void changePresentation(node, presentation)}
             onRunSelected={() => void runNodes([...selectedNodeIds])}
             onCreateWorkspace={createFirstWorkspace}
             onOpenManager={() => setView("settings")}
           />
-          <WorkspaceDetailPane node={selectedNode} serverNames={serverNames} />
+          <WorkspaceDetailPane
+            node={selectedNode}
+            servers={serversById}
+            selectedNodeId={selectedNodeId}
+            selectedNodeIds={selectedNodeIds}
+            executionDetails={executionDetails}
+            executionHistory={executionHistory}
+            descriptions={descriptions}
+            runResult={runResult}
+            onSelectNode={setSelectedNodeId}
+            onToggleSelected={toggleSelectedNode}
+            onPresentationChange={(node, presentation) => void changePresentation(node, presentation)}
+          />
         </div>
       ) : (
         <main className="legacy-workspace">{renderView(view)}</main>
@@ -377,6 +444,7 @@ function WorkspaceCanvas({
   selectedNodeId,
   selectedNodeIds,
   projection,
+  graphLayout,
   executionDetails,
   executionHistory,
   descriptions,
@@ -386,7 +454,9 @@ function WorkspaceCanvas({
   error,
   onSelectNode,
   onToggleSelected,
+  onSelectGraphNode,
   onProjectionChange,
+  onGraphLayoutChange,
   onPresentationChange,
   onRunSelected,
   onCreateWorkspace,
@@ -398,6 +468,7 @@ function WorkspaceCanvas({
   selectedNodeId: string | null;
   selectedNodeIds: Set<string>;
   projection: WorkspaceProjection;
+  graphLayout: GraphLayout;
   executionDetails: Map<string, ExecutionDetail>;
   executionHistory: Map<string, ExecutionRecord[]>;
   descriptions: Map<string, string>;
@@ -407,7 +478,9 @@ function WorkspaceCanvas({
   error: string | null;
   onSelectNode: (id: string) => void;
   onToggleSelected: (id: string) => void;
+  onSelectGraphNode: (id: string, additive: boolean) => void;
   onProjectionChange: (projection: WorkspaceProjection) => void;
+  onGraphLayoutChange: (layout: GraphLayout) => void;
   onPresentationChange: (node: WorkspaceNodeRow, presentation: WorkspaceNodePresentation) => void;
   onRunSelected: () => void;
   onCreateWorkspace: (name: string) => Promise<void>;
@@ -419,7 +492,7 @@ function WorkspaceCanvas({
     <main className="workspace-canvas" data-testid="workspace-page">
       <div className="workspace-toolbar">
         <div className="segmented" aria-label="Workspace projection">
-          {(["grid", "list"] as const).map((item) => (
+          {(["graph", "grid", "list"] as const).map((item) => (
             <button
               key={item}
               data-testid={`projection-${item}`}
@@ -437,7 +510,7 @@ function WorkspaceCanvas({
         <button className="button" onClick={onOpenManager}>Manage workspace</button>
       </div>
 
-      <div className="canvas-scroll">
+      <div className={`canvas-scroll ${projection === "graph" ? "graph-mode" : ""}`}>
         {error && <p className="form-error canvas-message">{error}</p>}
         {loading && <p className="muted canvas-message">Loading durable workspace…</p>}
         {!loading && !workspace && (
@@ -468,7 +541,21 @@ function WorkspaceCanvas({
             <button className="button" onClick={onOpenManager}>Open workspace manager</button>
           </div>
         )}
-        {workspace && nodes.length > 0 && (
+        {workspace && nodes.length > 0 && projection === "graph" && (
+          <WorkspaceGraph
+            nodes={nodes}
+            servers={servers}
+            selectedNodeId={selectedNodeId}
+            selectedNodeIds={selectedNodeIds}
+            executionDetails={executionDetails}
+            runResult={runResult}
+            edges={[]}
+            layout={graphLayout}
+            onSelectNode={onSelectGraphNode}
+            onLayoutChange={onGraphLayoutChange}
+          />
+        )}
+        {workspace && nodes.length > 0 && projection !== "graph" && (
           <WorkspaceProjections
             projection={projection}
             nodes={nodes}
@@ -489,31 +576,14 @@ function WorkspaceCanvas({
   );
 }
 
-function WorkspaceDetailPane({ node, serverNames }: { node: WorkspaceNodeRow | null; serverNames: Map<string, string> }) {
-  const capability = node?.capabilityId ? parseCapabilityId(node.capabilityId) : null;
+function WorkspaceDetailPane({ node, ...props }: { node: WorkspaceNodeRow | null } & Omit<NodeProjectionProps, "node">) {
   return (
     <aside className="detail-pane" data-testid="workspace-detail-pane">
       <div className="detail-head">
-        <span className="muted">{node ? "Selected workspace node" : "Workspace details"}</span>
-        <h2>{capability?.name ?? (node ? "Unbound node" : "Nothing selected")}</h2>
+        <span className="muted">{node ? "Selected capability" : "Workspace details"}</span>
+        <h2>{node?.capabilityId ? (parseCapabilityId(node.capabilityId)?.name ?? node.capabilityId) : (node ? "Unbound node" : "Nothing selected")}</h2>
       </div>
-      {node ? (
-        <div className="detail-sections">
-          <section>
-            <h3>Identity</h3>
-            <dl className="detail-list">
-              <div><dt>Server</dt><dd>{node.serverId ? (serverNames.get(node.serverId) ?? node.serverId) : "Unavailable"}</dd></div>
-              <div><dt>Type</dt><dd>{capability?.type ?? "Unavailable"}</dd></div>
-              <div><dt>Presentation</dt><dd>{node.presentation}</dd></div>
-              <div><dt>Position</dt><dd>{node.position}</dd></div>
-            </dl>
-          </section>
-          <section>
-            <h3>Arguments</h3>
-            <pre>{formatArguments(node.argumentsJson)}</pre>
-          </section>
-        </div>
-      ) : (
+      {node ? <CapabilityInspector node={node} {...props} /> : (
         <p className="detail-empty">Select a workspace node to inspect its persisted configuration.</p>
       )}
     </aside>
@@ -565,13 +635,4 @@ function protocolSummary(servers: ServerSummary[]) {
     }),
   );
   return labels.size === 1 ? [...labels][0] : "Mixed protocols";
-}
-
-function formatArguments(value: string | null) {
-  if (!value) return "No arguments configured";
-  try {
-    return JSON.stringify(JSON.parse(value), null, 2);
-  } catch {
-    return value;
-  }
 }

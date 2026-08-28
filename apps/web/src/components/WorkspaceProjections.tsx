@@ -13,10 +13,8 @@ import type {
 } from "../api/types";
 import { RendererView, suggestKindClientSide } from "../renderer-view";
 
-export type WorkspaceProjection = "grid" | "list";
-
-interface WorkspaceProjectionsProps {
-  projection: WorkspaceProjection;
+export interface WorkspaceProjectionsProps {
+  projection: "grid" | "list";
   nodes: WorkspaceNodeRow[];
   servers: Map<string, ServerSummary>;
   selectedNodeId: string | null;
@@ -30,7 +28,7 @@ interface WorkspaceProjectionsProps {
   onPresentationChange: (node: WorkspaceNodeRow, presentation: WorkspaceNodePresentation) => void;
 }
 
-interface NodeProjectionProps extends Omit<WorkspaceProjectionsProps, "projection" | "nodes"> {
+export interface NodeProjectionProps extends Omit<WorkspaceProjectionsProps, "projection" | "nodes"> {
   node: WorkspaceNodeRow;
 }
 
@@ -42,7 +40,7 @@ export function WorkspaceProjections(props: WorkspaceProjectionsProps) {
       {props.projection === "grid" ? <GridProjection {...props} /> : <ListProjection {...props} />}
       {focusNode && (
         <div className="capability-focus" data-testid={`capability-focus-${focusNode.id}`}>
-          <CapabilityCard {...nodeProps(props, focusNode)} forceExpanded />
+          <CapabilityInspector {...nodeProps(props, focusNode)} />
         </div>
       )}
     </>
@@ -83,8 +81,12 @@ function ListProjection(props: WorkspaceProjectionsProps) {
   );
 }
 
+export function CapabilityInspector(props: NodeProjectionProps) {
+  return <CapabilityCard {...props} forceExpanded />;
+}
+
 function CapabilityCard(props: NodeProjectionProps & { forceExpanded?: boolean }) {
-  const summary = getNodeSummary(props);
+  const summary = getWorkspaceNodeSummary(props);
   const isExpanded = props.forceExpanded || props.node.presentation !== "collapsed";
   return (
     <article
@@ -112,7 +114,7 @@ function CapabilityCard(props: NodeProjectionProps & { forceExpanded?: boolean }
 }
 
 function CapabilityListRows(props: NodeProjectionProps) {
-  const summary = getNodeSummary(props);
+  const summary = getWorkspaceNodeSummary(props);
   const expanded = props.node.presentation !== "collapsed";
   return (
     <>
@@ -323,7 +325,7 @@ function HistoryDetails({ executions }: { executions: ExecutionRecord[] }) {
   );
 }
 
-function getNodeSummary(props: NodeProjectionProps) {
+export function getWorkspaceNodeSummary(props: Pick<NodeProjectionProps, "node" | "servers" | "executionDetails" | "runResult">) {
   const capability = props.node.capabilityId ? parseCapabilityId(props.node.capabilityId) : null;
   const server = props.node.serverId ? props.servers.get(props.node.serverId) : undefined;
   const detail = props.executionDetails.get(props.node.id);

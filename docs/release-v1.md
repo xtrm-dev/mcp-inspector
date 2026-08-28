@@ -60,10 +60,32 @@ See [`conformance/evidence/`](../conformance/evidence/) for the dated JSON evide
 
 ## Known residuals — tracked, NOT covered by this slice
 
+### Protocol correctness
+
 - **R1 — Tasks spec correction** (issue #60). CLEAN. Slice 1 (PR #66) added `getTask` / `updateTask` / `cancelTask` on `McpClientAdapter` and wired the gateway. Slice 2 (PR #68) made the wire real end-to-end via a raw-fetch seam that bypasses `Client.request` (SDK #2598 client-side rejection at the negotiated-version gate), with a strict-server assertion proving exact wire methods land and historical `tasks/list` / `tasks/result` are never emitted. Packaged smoke expansion for the real seam still to land.
 - **R2 — Modern negotiation hardening** (issue #61). CLEAN. Slice 1 (PR #70) regression guard: `policy: "auto"` against a modern-only server classifies modern (SDK #2722 protection). Slice 2 (PR #71) negative guard: `policy: "modern"` against a legacy-only server must not silently downgrade.
 - **P0 / P1 PRD-ADR wording** (issue #62). DONE. P0 (PR #67) sharpened `server/discover`, MRTR retry semantics, Tasks state machine, `pollIntervalMs` ownership, expanded conformance caveat. P1 (PR #72) sharpened CAP-07 + ADR-0003 §13.3 modern `subscriptions/listen` language.
 - **R9 — Conformance-client OAuth** (issue #63). PARTIAL. Slice 1 (PR #73) adds Bearer + custom-header credential surfaces so the harness exercises OAuth-required / API-key-gated scenarios through the same descriptor path production servers use. See the operator runbook below for exercising an OAuth-protected server without runtime code-flow. Slice 2 (dynamic OAuth code-flow via configurable OAuthClientProvider) and slice 3 (operator-in-the-loop E2E evidence) remain.
+
+### Canonical workspace-first UX reconstruction — R-UX (issue #64)
+
+Restores the workspace-first shell over the existing `/api/v1` backend, per the recovered V2 mockup and PRD §6 IA. Progress:
+
+- **UX-0** (PR #65). DONE. Recovered V2 mockup persisted at `docs/design/mockups/2026-08-16-mercury-inspector-v2-reference.html` verbatim + `docs/design/README.md` (design authority hierarchy).
+- **UX-1** (PR #69). DONE. Workspace-first shell — topbar, sidebar (`Workspace | Capabilities | Executions | Agent Runs | Source / Runtime | Servers | Settings`), workspace canvas region wired to real `/api/v1/workspaces/*`, right-hand detail pane placeholder. Default landing is now Workspace, not Servers.
+- **UX-2** — Grid + List capability card projections; collapsed / expanded / focus states; shared local inspection tabs. IN PROGRESS. Sibling `mcp-inspector-xt-pi-ux2-cards` (Codex `gpt-5.6-sol`, worktree `.xtrm/worktrees/mcp-inspector-xt-pi-ux2-cards`, branch `xt/ux2-cards`) has scaffold on disk (`WorkspaceProjections.tsx` + `workspace-cards.test.tsx`); correction pass in flight.
+- **UX-3** — Graph projection + persisted layout. HAND-ROLL SCAFFOLD PENDING. Sibling `mcp-inspector-xt-pi-ux3-graph` completed library evaluation: `@xyflow/react` at 52 kB gzip fails the 200 kB app-budget constraint; hand-roll approved. Sibling holds writes until UX-2 lands.
+- **UX-4** (PR #75). DONE. Cross-server Capability Catalog + Add-to-workspace modal. Search + kind filter + server chips + show-disconnected toggle. Reusable modal ready for UX-2 per-node Add affordance.
+- **UX-5 slice 1** (PR #77). DONE. Structured execution comparison view — replaces the raw-`<pre>` dump antipattern per dispatch §20. Slice 2 (shared inspector promotion + full tab set) and slice 3 (first-class "compare failed with last successful" affordance) remain.
+- **UX-6 slice 1** (PR #78). DONE. Agent Run Timeline projection + projection picker (List / Timeline). Slice 2 adds Waterfall / Graph / Workspace projections.
+- **UX-7 slice 1** (PR #79). DONE. Source / Runtime / Combined mode toggle. Slice 2 (Runtime graph rendering) and slice 3 (Combined overlay + code viewer modes) remain.
+- **UX-8** (PR #76). DONE. Investigation Packet will-include preview: shows per-tier evidence composition across selection with explicit "n/a for selection" markers rather than silent drops.
+
+### Full-suite verification as of this ledger update
+
+- `npm test` — **289 pass, 3 skipped, 55 test files** (0 regressions across 15 merged coordinator PRs).
+- `npm run build` — green.
+- `npm run typecheck` — green.
 - **F — stdio server-add smoke scenario**. `apps/gateway/src/stdio-mcp.test.ts` proves stdio at the runner layer, and `apps/gateway/src/capture-*.test.ts` proves the stdio-proxy capture path. Neither yet runs against the packaged product because the packaged tarball ships no `stdio` demo binary; the operator playbook covers it end-to-end.
 - **G — trace/source packaged scenario**. Storage seam, timeline overlay, revision → handler/symbol mapping are wired; a packaged smoke scenario against a deterministic fixture repository/revision is not yet in `SCENARIOS`.
 - **Large-result virtualization** — renderer registry + artifact paging are wired (PR #40); a packaged smoke assertion of virtualized rendering under threshold boundaries is not yet in `SCENARIOS`.

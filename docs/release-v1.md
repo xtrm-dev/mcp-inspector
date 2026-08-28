@@ -60,8 +60,10 @@ See [`conformance/evidence/`](../conformance/evidence/) for the dated JSON evide
 
 ## Known residuals — tracked, NOT covered by this slice
 
-- **R1 — Tasks spec correction** (`mcp-inspector-4to`). The Tasks lifecycle in smoke scenarios 8–9 is domain-layer only: the gateway advertises `io.modelcontextprotocol/tasks` and rides polling as `taskAction` rounds on `/executions/:id/rounds`. `apps/gateway/src/tasks.test.ts` documents the SDK gap ("no live wire-level `tasks/get` in the installed SDK"). R1 wires real `tasks/get`/`tasks/cancel`/`tasks/list` against MCP 2026-07-28. Classified: PARTIAL.
-- **R9 — Conformance-client OAuth** (`mcp-inspector-v6b`). Remote-MCP OAuth (issuer discovery, PKCE, resource indicators, refresh) is wired in the gateway/protocol/runner path (PR #53), but `apps/conformance-client` has no `OAuthProvider`. All 74 informational conformance `auth/*` failures trace to this and to `apps/conformance-client/expected-failures.yml`. Classified: PARTIAL.
+- **R1 — Tasks spec correction** (issue #60). CLEAN. Slice 1 (PR #66) added `getTask` / `updateTask` / `cancelTask` on `McpClientAdapter` and wired the gateway. Slice 2 (PR #68) made the wire real end-to-end via a raw-fetch seam that bypasses `Client.request` (SDK #2598 client-side rejection at the negotiated-version gate), with a strict-server assertion proving exact wire methods land and historical `tasks/list` / `tasks/result` are never emitted. Packaged smoke expansion for the real seam still to land.
+- **R2 — Modern negotiation hardening** (issue #61). CLEAN. Slice 1 (PR #70) regression guard: `policy: "auto"` against a modern-only server classifies modern (SDK #2722 protection). Slice 2 (PR #71) negative guard: `policy: "modern"` against a legacy-only server must not silently downgrade.
+- **P0 / P1 PRD-ADR wording** (issue #62). DONE. P0 (PR #67) sharpened `server/discover`, MRTR retry semantics, Tasks state machine, `pollIntervalMs` ownership, expanded conformance caveat. P1 (PR #72) sharpened CAP-07 + ADR-0003 §13.3 modern `subscriptions/listen` language.
+- **R9 — Conformance-client OAuth** (issue #63). PARTIAL. Slice 1 (PR #73) adds Bearer + custom-header credential surfaces so the harness exercises OAuth-required / API-key-gated scenarios through the same descriptor path production servers use. See the operator runbook below for exercising an OAuth-protected server without runtime code-flow. Slice 2 (dynamic OAuth code-flow via configurable OAuthClientProvider) and slice 3 (operator-in-the-loop E2E evidence) remain.
 - **F — stdio server-add smoke scenario**. `apps/gateway/src/stdio-mcp.test.ts` proves stdio at the runner layer, and `apps/gateway/src/capture-*.test.ts` proves the stdio-proxy capture path. Neither yet runs against the packaged product because the packaged tarball ships no `stdio` demo binary; the operator playbook covers it end-to-end.
 - **G — trace/source packaged scenario**. Storage seam, timeline overlay, revision → handler/symbol mapping are wired; a packaged smoke scenario against a deterministic fixture repository/revision is not yet in `SCENARIOS`.
 - **Large-result virtualization** — renderer registry + artifact paging are wired (PR #40); a packaged smoke assertion of virtualized rendering under threshold boundaries is not yet in `SCENARIOS`.
@@ -92,3 +94,64 @@ npm run package
 npm run smoke
 npm run conformance
 ```
+
+## R9 — Conformance-client OAuth operator runbook
+
+Slice 1 (PR #73) accepts a pre-minted OAuth access token via env,
+exercising an OAuth resource-server end-to-end without a browser
+redirect during the harness run. The operator mints the token out-of-band
+against the OAuth issuer; the harness pipes it to the resource server
+through the same descriptor path production servers use.
+
+```bash
+# 1. Operator mints an access token against the OAuth issuer.
+#    Method depends on the issuer (client credentials, device code, or
+#    a captured refresh cycle — MCP Inspector X does not prescribe).
+#    Store the token in a shell variable; do not echo, do not log.
+export MCP_CONFORMANCE_BEARER_TOKEN="$(read-token-from-secure-source)"
+
+# 2. Optional: pin the protocol version.
+export MCP_CONFORMANCE_PROTOCOL_VERSION="2026-07-28"
+
+# 3. Run the conformance harness against the OAuth-protected resource
+#    server. The harness invokes the packaged conformance client with
+#    the URL as last argv; the env var is picked up by
+#    apps/conformance-client/src/index.ts and set on the descriptor
+#    as `bearerToken`, sent as `Authorization: Bearer <token>` on every
+#    request through the SDK Streamable HTTP transport's auth provider.
+npm run conformance -- --url=https://mcp.example.com/  # illustrative
+```
+
+For API-key-gated servers (non-Bearer auth headers), use
+`MCP_CONFORMANCE_CUSTOM_HEADERS` — a JSON object of `{ header: value }`
+that merges into `descriptor.customHeaders`:
+
+```bash
+export MCP_CONFORMANCE_CUSTOM_HEADERS='{"X-API-Key": "'"$MIX_APIKEY"'"}'
+```
+
+### Evidence capture
+
+Preserve the following per run under `docs/evidence/YYYY-MM-DD-<issuer-slug>/`:
+
+- `conformance-run.json` — the harness's own evidence file.
+- `env-context.txt` — the exact env var names supplied (values REDACTED).
+- `gateway.log` — the gateway process log for the run (secrets
+  already scrubbed by `SecretsRegistry.known()`).
+- `sha256sums.txt` — of the packaged `.tgz` under test.
+
+Never commit the token itself. Redact any log line the harness might
+have written it to before storing evidence.
+
+### Slice 2 (pending, same issue #63)
+
+Dynamic OAuth code-flow via a configurable `OAuthClientProvider`.
+Env-configured issuer / client / redirect. Removes the "operator mints
+token out-of-band" step so the harness runs unattended once the client
+is registered with the AS.
+
+### Slice 3 (pending, same issue #63)
+
+Operator-in-the-loop remote-MCP OAuth E2E — real browser redirect,
+consent screen, PKCE, refresh cycle, all captured as durable evidence.
+Requires a real MCP OAuth issuer + a scripted operator step.

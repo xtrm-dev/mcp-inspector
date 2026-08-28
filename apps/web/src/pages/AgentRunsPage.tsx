@@ -3,10 +3,11 @@ import { listAgentRuns } from "../api/client";
 import type { AgentRun } from "../api/types";
 import { TraceOverlayPanel } from "../components/TraceOverlayPanel";
 import { AgentRunTimeline } from "../components/AgentRunTimeline";
+import { AgentRunWaterfall } from "../components/AgentRunWaterfall";
 
-// UX-6 slice 1: projection selector. Slice 1 ships List (existing table)
-// and Timeline. Waterfall / Graph / Workspace projections land in slice 2.
-type ProjectionId = "list" | "timeline";
+// UX-6 slice 2: adds Waterfall projection. Graph / Workspace projections
+// land in slice 3.
+type ProjectionId = "list" | "timeline" | "waterfall";
 
 export function AgentRunsPage() {
   const [runs, setRuns] = useState<AgentRun[]>([]);
@@ -22,7 +23,7 @@ export function AgentRunsPage() {
       <div className="page-header">
         <h2>Agent runs</h2>
         <div className="projection-picker" role="tablist" aria-label="Agent runs projection">
-          {(["list", "timeline"] as const).map((p) => (
+          {(["list", "timeline", "waterfall"] as const).map((p) => (
             <button
               key={p}
               type="button"
@@ -32,7 +33,7 @@ export function AgentRunsPage() {
               data-testid={`agent-runs-projection-${p}`}
               onClick={() => setProjection(p)}
             >
-              {p === "list" ? "List" : "Timeline"}
+              {p === "list" ? "List" : p === "timeline" ? "Timeline" : "Waterfall"}
             </button>
           ))}
         </div>
@@ -58,6 +59,7 @@ export function AgentRunsPage() {
       </table>
 
       {selectedId && projection === "timeline" && <AgentRunTimeline agentRunId={selectedId} />}
+      {selectedId && projection === "waterfall" && <AgentRunWaterfall agentRunId={selectedId} />}
       {selectedId && <TraceOverlayPanel agentRunId={selectedId} />}
     </div>
   );

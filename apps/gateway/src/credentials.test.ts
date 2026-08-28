@@ -160,4 +160,35 @@ describe("credential registry + env secret provider", () => {
       parsed.packet.redactions.some((rec) => rec.reason === "known-secret-value-policy"),
     ).toBe(true);
   });
+
+  it("POST /api/v1/credentials with a session provider + inline value seeds the secret in one round trip", async () => {
+    const r = await app.request("/api/v1/credentials", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "session",
+        key: "spa-inline-key",
+        value: "spa-session-secret-2026",
+      }),
+    });
+    expect(r.status).toBe(201);
+    const body = (await r.json()) as { credentialRef: { id: string; provider: string } };
+    expect(body.credentialRef.provider).toBe("session");
+    // The resolver returns the value that was just seeded — no separate write route needed.
+    const resolved = await secrets.resolve(body.credentialRef.id);
+    expect(resolved).toBe("spa-session-secret-2026");
+  });
+
+  it("POST /api/v1/credentials rejects an inline value for the 'env' provider", async () => {
+    const r = await app.request("/api/v1/credentials", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        provider: "env",
+        key: "MIX_TEST_TOKEN",
+        value: "must-not-be-accepted",
+      }),
+    });
+    expect(r.status).toBe(400);
+  });
 });

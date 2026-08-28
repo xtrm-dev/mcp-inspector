@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   callTool,
   connectServer,
+  createCredential,
   createServer,
   deleteServer,
   disconnectServer,
@@ -21,10 +22,15 @@ import type {
 import { SchemaForm } from "../schema-form";
 import { RendererView } from "../renderer-view";
 
+type AuthKind = "none" | "bearer" | "header";
+
 const emptyForm = {
   displayName: "",
   transport: "streamable-http" as Transport,
   endpoint: "",
+  authKind: "none" as AuthKind,
+  headerName: "X-API-Key",
+  authValue: "",
   connectNow: true,
 };
 
@@ -61,10 +67,36 @@ export function ServersPage() {
   async function handleCreate(e: React.FormEvent) {
     e.preventDefault();
     try {
+      let credentialRefId: string | null = null;
+      let headerCredentials: Record<string, string> | null = null;
+      if (form.authKind !== "none") {
+        if (!form.authValue) {
+          throw new Error("auth value is required for the selected auth kind");
+        }
+        if (form.authKind === "header" && !form.headerName.trim()) {
+          throw new Error("header name is required for custom-header auth");
+        }
+        // Session-provider credential: value lives in-memory in the
+        // gateway, redacted via SecretsRegistry.known, and clears on
+        // gateway restart. No plaintext persisted on disk.
+        const label = `spa-${form.authKind}-${Date.now()}`;
+        const cred = await createCredential({
+          provider: "session",
+          key: label,
+          value: form.authValue,
+        });
+        if (form.authKind === "bearer") {
+          credentialRefId = cred.credentialRef.id;
+        } else {
+          headerCredentials = { [form.headerName]: cred.credentialRef.id };
+        }
+      }
       await createServer({
         displayName: form.displayName,
         transport: form.transport,
         endpoint: form.endpoint || null,
+        credentialRefId,
+        headerCredentials,
         connectNow: form.connectNow,
       });
       setForm(emptyForm);
@@ -112,6 +144,45 @@ export function ServersPage() {
             Connect now
           </label>
         </div>
+        {form.transport === "streamable-http" && (
+          <div className="field-row">
+            <label>
+              Auth
+              <select
+                value={form.authKind}
+                onChange={(e) =>
+                  setForm({ ...form, authKind: e.target.value as AuthKind, authValue: "" })
+                }
+              >
+                <option value="none">None</option>
+                <option value="bearer">Authorization: Bearer</option>
+                <option value="header">Custom header</option>
+              </select>
+            </label>
+            {form.authKind === "header" && (
+              <label>
+                Header name
+                <input
+                  value={form.headerName}
+                  placeholder="X-API-Key"
+                  onChange={(e) => setForm({ ...form, headerName: e.target.value })}
+                />
+              </label>
+            )}
+            {form.authKind !== "none" && (
+              <label>
+                {form.authKind === "bearer" ? "Bearer token" : "Header value"}
+                <input
+                  type="password"
+                  autoComplete="off"
+                  spellCheck={false}
+                  value={form.authValue}
+                  onChange={(e) => setForm({ ...form, authValue: e.target.value })}
+                />
+              </label>
+            )}
+          </div>
+        )}
         <button className="button primary" type="submit">
           Add server
         </button>

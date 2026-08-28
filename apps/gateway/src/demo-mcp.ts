@@ -1,6 +1,7 @@
 import { createServer, type Server as HttpServer } from "node:http";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
+import { Readable } from "node:stream";
 import { z } from "zod";
 import {
   McpServer,
@@ -16,20 +17,84 @@ import { MODERN_PROTOCOL_VERSION } from "@mcp-inspector-x/protocol";
  * Bring-your-own-demo: a self-contained 2026-07-28 MCP server the gateway
  * spawns in-process at boot so the web UI has real live data on first run.
  *
- * ponytail: hardcoded add_numbers + slow_echo. Real product wiring for
- * external servers (env var / config file, multi-server, auth) is a
- * separate slice — this exists so the first-run experience is not empty.
+ * The HTTP layer here also serves the Tasks-extension raw-wire methods
+ * (`tasks/get`, `tasks/update`, `tasks/cancel`) directly — `createMcpHandler`
+ * rejects those method names under SDK #2598 (historical-name registry),
+ * so the wrap intercepts them before they reach `nodeHandler`. Historical
+ * `tasks/list` and `tasks/result` are rejected with -32601 and recorded
+ * to `getForbiddenTaskMethodsReceived()` so strict-server integration tests
+ * can assert they were never emitted by the seam.
+ *
+ * ponytail: hardcoded add_numbers + slow_echo + long_running_task. Real
+ * product wiring for external servers (env var / config file, multi-server,
+ * auth) is a separate slice — this exists so the first-run experience is
+ * not empty.
  */
 export interface DemoMcp {
   readonly url: string;
   close(): Promise<void>;
 }
 
+// Receipt log for strict-server assertions. Cleared per describe suite.
+interface TaskMethodReceipt {
+  method: string;
+  taskId: string | undefined;
+  headers: Record<string, string | string[] | undefined>;
+}
+const taskMethodsReceived: TaskMethodReceipt[] = [];
+const forbiddenTaskMethodsReceived: TaskMethodReceipt[] = [];
+
+/** Reset the receipt log; call from `beforeEach`/`beforeAll` in tests. */
+export function resetTaskMethodReceipts(): void {
+  taskMethodsReceived.length = 0;
+  forbiddenTaskMethodsReceived.length = 0;
+}
+
+/** Every `tasks/get`, `tasks/update`, `tasks/cancel` request the demo saw. */
+export function getTaskMethodsReceived(): ReadonlyArray<TaskMethodReceipt> {
+  return taskMethodsReceived;
+}
+
+/** Historical `tasks/list` / `tasks/result` requests — MUST stay empty. */
+export function getForbiddenTaskMethodsReceived(): ReadonlyArray<TaskMethodReceipt> {
+  return forbiddenTaskMethodsReceived;
+}
+
 export async function startDemoMcp(): Promise<DemoMcp> {
   const handler: McpHttpHandler = createMcpHandler(() => buildDemoServer());
   const nodeHandler = toNodeHandler(handler);
-  const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    void nodeHandler(req as unknown as Parameters<typeof nodeHandler>[0], res);
+  const server = createServer(async (req: IncomingMessage, res: ServerResponse) => {
+    // Buffer the body once so we can either handle Tasks methods here or
+    // replay the exact bytes through nodeHandler for everything else.
+    let body = "";
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of req) chunks.push(chunk as Buffer);
+      body = Buffer.concat(chunks).toString("utf8");
+    } catch {
+      // Fall through — nodeHandler will surface the read error itself.
+    }
+
+    if (req.method === "POST" && body.length > 0) {
+      const routed = tryRouteTasksMethod(body, req.headers, res);
+      if (routed) return;
+    }
+
+    // Replay the body through the SDK node handler for everything else.
+    // The replay stream carries the exact request context by copying the
+    // small allowlist of fields the SDK's node handler reads. Written as
+    // explicit assignments (not Object.assign) so linters do not flag it
+    // as a mass-assignment sink.
+    const replay = Readable.from([body]) as unknown as IncomingMessage;
+    replay.headers = req.headers;
+    replay.method = req.method;
+    replay.url = req.url;
+    replay.httpVersion = req.httpVersion;
+    replay.httpVersionMajor = req.httpVersionMajor;
+    replay.httpVersionMinor = req.httpVersionMinor;
+    (replay as unknown as { socket: unknown }).socket = req.socket;
+    replay.complete = true;
+    void nodeHandler(replay as unknown as Parameters<typeof nodeHandler>[0], res);
   });
   await new Promise<void>((resolve, reject) => {
     server.once("error", reject);
@@ -45,6 +110,114 @@ export async function startDemoMcp(): Promise<DemoMcp> {
       await closeHttpServer(server);
     },
   };
+}
+
+/**
+ * Tasks extension raw-wire dispatcher. Returns `true` if the message was a
+ * Tasks-extension method and was answered here (McpServer never sees it),
+ * `false` otherwise. Non-JSON bodies fall through untouched.
+ */
+function tryRouteTasksMethod(
+  body: string,
+  headers: IncomingMessage["headers"],
+  res: ServerResponse,
+): boolean {
+  let msg: { method?: unknown; id?: unknown; params?: unknown } | null = null;
+  try {
+    msg = JSON.parse(body) as typeof msg;
+  } catch {
+    return false;
+  }
+  if (!msg || typeof msg.method !== "string") return false;
+  const method = msg.method;
+  const id = msg.id;
+  const params = (msg.params ?? {}) as { taskId?: unknown; inputResponses?: unknown; requestState?: unknown };
+  const taskId = typeof params.taskId === "string" ? params.taskId : undefined;
+
+  if (method === "tasks/list" || method === "tasks/result") {
+    forbiddenTaskMethodsReceived.push({ method, taskId, headers });
+    return respondJson(res, {
+      jsonrpc: "2.0",
+      id,
+      error: {
+        code: -32601,
+        message: `historical Tasks method '${method}' is not implemented on modern 2026-07-28 server`,
+      },
+    });
+  }
+  if (method !== "tasks/get" && method !== "tasks/update" && method !== "tasks/cancel") {
+    return false;
+  }
+
+  taskMethodsReceived.push({ method, taskId, headers });
+  if (taskId === undefined) {
+    return respondJson(res, {
+      jsonrpc: "2.0",
+      id,
+      error: { code: -32602, message: `'${method}' requires params.taskId` },
+    });
+  }
+  const task = demoTasks.get(taskId);
+  if (!task) {
+    return respondJson(res, {
+      jsonrpc: "2.0",
+      id,
+      error: { code: -32602, message: `unknown taskId '${taskId}'` },
+    });
+  }
+
+  if (method === "tasks/cancel") {
+    task.status = "cancelled";
+    return respondJson(res, {
+      jsonrpc: "2.0",
+      id,
+      result: { taskId, status: "cancelled" },
+    });
+  }
+  if (method === "tasks/update") {
+    // The demo does not model mid-task input yet; acknowledge and echo.
+    return respondJson(res, {
+      jsonrpc: "2.0",
+      id,
+      result: { taskId, status: task.status },
+    });
+  }
+
+  // tasks/get: advance the demo state machine (poll #2 → completed).
+  if (task.status === "working") {
+    task.pollCount += 1;
+    if (task.pollCount >= 2) {
+      task.status = "completed";
+      task.result = 42;
+    }
+  }
+  const resultEnv: Record<string, unknown> = {
+    taskId,
+    status: task.status,
+    pollIntervalMs: 250,
+  };
+  if (task.status === "completed" && task.result !== undefined) {
+    resultEnv["result"] = {
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ taskId, status: "completed", result: task.result }),
+        },
+      ],
+      structuredContent: { taskId, status: "completed", result: task.result },
+    };
+  }
+  return respondJson(res, { jsonrpc: "2.0", id, result: resultEnv });
+}
+
+function respondJson(res: ServerResponse, body: unknown): true {
+  const payload = JSON.stringify(body);
+  res.writeHead(200, {
+    "content-type": "application/json",
+    "content-length": Buffer.byteLength(payload).toString(),
+  });
+  res.end(payload);
+  return true;
 }
 
 function closeHttpServer(server: HttpServer): Promise<void> {

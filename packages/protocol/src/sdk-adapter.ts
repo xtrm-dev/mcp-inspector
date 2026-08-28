@@ -25,6 +25,10 @@ import {
 interface Session {
   client: Client;
   transport: Transport;
+  // Kept so the R1 raw-wire seam can address the transport target
+  // without going through Client (which rejects `tasks/get` and
+  // `tasks/cancel` at the negotiated-version gate — SDK #2598).
+  descriptor: McpServerDescriptor;
 }
 
 const CLIENT_INFO = { name: "mcp-inspector-x", version: "0.0.0" } as const;
@@ -125,7 +129,7 @@ export function createSdkAdapter(): McpClientAdapter {
         throw err;
       }
 
-      sessions.set(descriptor.id, { client, transport });
+      sessions.set(descriptor.id, { client, transport, descriptor });
 
       const era = client.getProtocolEra() as ProtocolEra | undefined;
       const version = client.getNegotiatedProtocolVersion();
@@ -273,15 +277,21 @@ export function createSdkAdapter(): McpClientAdapter {
 }
 
 /**
- * Tasks extension raw-wire request. Bypasses `Client.callTool`'s typed
- * codec (which rejects `resultType: "task"`, SDK #2637) and the historical
- * name registry (which rejects `tasks/get`/`tasks/cancel`, SDK #2598) by
- * dropping to `Client.request({ method, params }, opts)` with the extension
- * method literal. `Mcp-Method` is derived from `method` by the SDK
- * transport; `Mcp-Name: <taskId>` is emitted via the `_meta` envelope
- * (see `RELATED_TASK_META_KEY`), which the SDK v2 Streamable HTTP
- * transport translates to the required header. If a future SDK release
- * exposes public typed methods for these operations, replace this seam.
+ * Tasks extension raw-wire request. Bypasses `Client.request` entirely —
+ * the SDK v2 client rejects `tasks/get` / `tasks/cancel` at the
+ * negotiated-version gate with `Method '...' is not supported by the
+ * negotiated protocol version` (client-side manifestation of SDK #2598
+ * on the historical Tasks method registry). This helper composes the
+ * modern JSON-RPC envelope by hand and POSTs it directly to the
+ * server's Streamable HTTP endpoint with the required MCP headers
+ * (`MCP-Protocol-Version`, `Mcp-Method`, `Mcp-Name: <taskId>`), plus
+ * the descriptor's Bearer token or arbitrary `customHeaders` auth if
+ * present. OAuth-provider-driven auth is quarantined for the follow-up
+ * slice — a `bearerToken` or `customHeaders` on the descriptor is the
+ * currently supported credential surface for the seam.
+ *
+ * If a future SDK release opens `tasks/get`/`tasks/cancel` past the
+ * version gate, replace this seam with the public typed methods.
  */
 async function rawTaskRequest(
   sessions: Map<string, Session>,
@@ -292,16 +302,67 @@ async function rawTaskRequest(
   signal: AbortSignal | undefined,
 ): Promise<{ value: JsonValue; evidence: ProtocolEvidence }> {
   const s = requireSession(sessions, serverId);
-  const requestOpts: { signal?: AbortSignal } = {};
-  if (signal) requestOpts.signal = signal;
+  if (s.descriptor.transport !== "streamable-http" || !s.descriptor.url) {
+    throw new Error(
+      `sdk-adapter: Tasks-extension raw wire requires streamable-http; server '${serverId}' is '${s.descriptor.transport}'`,
+    );
+  }
+  const url = s.descriptor.url;
+
   const paramsWithMeta: Record<string, unknown> = {
     ...params,
-    _meta: { "io.modelcontextprotocol/related-task": { taskId } },
+    _meta: {
+      "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+      "io.modelcontextprotocol/related-task": { taskId },
+    },
   };
-  const result = await (s.client as unknown as {
-    request: (r: { method: string; params: Record<string, unknown> }, o: unknown) => Promise<unknown>;
-  }).request({ method, params: paramsWithMeta }, requestOpts);
-  return mapTaskResult(s.client, result, method);
+  const requestId = `mix-tasks-${method}-${randomShortId()}`;
+  const message = { jsonrpc: "2.0", id: requestId, method, params: paramsWithMeta };
+
+  const headers: Record<string, string> = {
+    "content-type": "application/json",
+    accept: "application/json, text/event-stream",
+    "MCP-Protocol-Version": "2026-07-28",
+    "Mcp-Method": method,
+    "Mcp-Name": taskId,
+  };
+  if (s.descriptor.bearerToken !== undefined) {
+    headers["Authorization"] = `Bearer ${s.descriptor.bearerToken}`;
+  }
+  if (s.descriptor.customHeaders) {
+    for (const [k, v] of Object.entries(s.descriptor.customHeaders)) {
+      headers[k] = v;
+    }
+  }
+
+  const fetchOpts: RequestInit = {
+    method: "POST",
+    headers,
+    body: JSON.stringify(message),
+  };
+  if (signal) fetchOpts.signal = signal;
+
+  const httpResp = await fetch(url, fetchOpts);
+  if (!httpResp.ok) {
+    throw new Error(`sdk-adapter: ${method} → HTTP ${httpResp.status} ${httpResp.statusText}`);
+  }
+  const bodyText = await httpResp.text();
+  let parsed: { result?: unknown; error?: { code?: number; message?: string } };
+  try {
+    parsed = JSON.parse(bodyText) as typeof parsed;
+  } catch {
+    throw new Error(`sdk-adapter: ${method} → invalid JSON response: ${bodyText.slice(0, 200)}`);
+  }
+  if (parsed.error) {
+    throw new Error(
+      `sdk-adapter: ${method} → JSON-RPC error ${parsed.error.code ?? "?"}: ${parsed.error.message ?? "(no message)"}`,
+    );
+  }
+  return mapTaskResult(s.client, parsed.result, method);
+}
+
+function randomShortId(): string {
+  return Math.random().toString(36).slice(2, 10);
 }
 
 /**
@@ -337,7 +398,14 @@ function mapTaskResult(
   if (r.requestState !== undefined) extensions["requestState"] = r.requestState as JsonValue;
 
   if (status === "completed" && r.result !== undefined) {
-    const value = normalizeResult(r.result);
+    // Normalize the embedded tools/call-shaped result. Downstream
+    // detectTaskShape recognizes `{ taskId, status }` on the wrapper so
+    // routes.ts can settle the Execution as complete. Merge the two so
+    // the classifier still sees the task envelope.
+    const inner = normalizeResult(r.result);
+    const value: JsonValue = isJsonObject(inner)
+      ? { ...(inner as Record<string, JsonValue>), taskId: typeof r.taskId === "string" ? r.taskId : "", status }
+      : { taskId: typeof r.taskId === "string" ? r.taskId : "", status, result: inner };
     const evidence: ProtocolEvidence = { resultType: "complete" };
     if (era) evidence.era = era;
     if (version) evidence.version = version;
@@ -346,6 +414,11 @@ function mapTaskResult(
     return { value, evidence };
   }
 
+  // Non-completed statuses: shape the value so detectTaskShape can classify.
+  const value: JsonValue = {
+    taskId: typeof r.taskId === "string" ? r.taskId : "",
+    status,
+  };
   const resultType: ProtocolEvidence["resultType"] =
     status === "input_required" ? "input_required" : "task";
   const evidence: ProtocolEvidence = { resultType };
@@ -353,7 +426,7 @@ function mapTaskResult(
   if (version) evidence.version = version;
   if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
   evidence.extensions = extensions;
-  return { value: null, evidence };
+  return { value, evidence };
 }
 
 // Shared callTool + continueCall result mapping.

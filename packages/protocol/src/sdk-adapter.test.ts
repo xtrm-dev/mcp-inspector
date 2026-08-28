@@ -220,6 +220,37 @@ describe("createSdkAdapter (streamable-http, modern era)", () => {
     await new Promise<void>((resolve) => httpServer?.close(() => resolve()));
   });
 
+  // R2 slice 1 (#61) — regression guard against SDK #2722: the SDK
+  // probe MUST NOT silently downgrade a spec-conformant modern
+  // `2026-07-28` server to legacy under `policy: "auto"`.
+  it("R2: policy='auto' against a modern-only server classifies modern (SDK #2722 regression guard)", async () => {
+    const adapter = createSdkAdapter();
+    const descriptor: McpServerDescriptor = {
+      id: "auto-modern",
+      displayName: "Auto → Modern",
+      transport: "streamable-http",
+      url: baseUrl,
+      protocol: { policy: "auto" },
+    };
+
+    const negotiation = await adapter.connect(descriptor);
+    expect(negotiation.negotiatedEra).toBe("modern");
+    expect(negotiation.selectedVersion).toBe(MODERN_PROTOCOL_VERSION);
+
+    // A single tool call over the auto-classified session settles
+    // end-to-end evidence — proves the classification did not merely
+    // pass but is actually usable on the negotiated wire.
+    const { evidence } = await adapter.callTool({
+      serverId: descriptor.id,
+      name: "add_numbers",
+      arguments: { a: 2, b: 3 },
+    });
+    expect(evidence.era).toBe("modern");
+    expect(evidence.version).toBe(MODERN_PROTOCOL_VERSION);
+
+    await adapter.disconnect(descriptor.id);
+  }, 15_000);
+
   it("negotiates modern era, lists a tool, calls it, returns evidence", async () => {
     const adapter = createSdkAdapter();
     const descriptor: McpServerDescriptor = {

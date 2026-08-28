@@ -102,7 +102,37 @@ textarea { width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, mono
 }
 .workspace-toolbar > div:first-child { display: flex; align-items: baseline; gap: 10px; }
 .canvas-scroll { position: relative; min-height: 0; overflow: auto; padding: 22px; }
+.canvas-scroll.graph-mode { overflow: hidden; padding: 0; }
 .canvas-message { margin: 0 0 12px; }
+.workspace-graph-wrap { position: relative; display: grid; grid-template-rows: 42px minmax(0, 1fr); width: 100%; height: 100%; min-height: 420px; background: #0b0e12; }
+.workspace-graph-controls { z-index: 2; display: flex; align-items: center; gap: 6px; padding: 5px 9px; border-bottom: 1px solid var(--line); background: rgba(13,16,21,.94); }
+.workspace-graph-controls .button { height: 29px; font-size: 10px; }
+.workspace-graph-controls label { display: flex; align-items: center; gap: 6px; margin-left: auto; color: var(--muted); font-size: 10px; text-transform: uppercase; }
+.workspace-graph-controls select { height: 29px; padding-block: 0; }
+.workspace-graph { display: block; width: 100%; height: 100%; min-height: 0; cursor: grab; touch-action: none; user-select: none; }
+.workspace-graph:active { cursor: grabbing; }
+.workspace-graph-grid { pointer-events: none; fill: rgba(145,156,171,.2); }
+.workspace-graph-world { transition: transform 120ms ease-out; }
+.workspace-graph.interacting .workspace-graph-world { transition: none; }
+.workspace-graph-group { pointer-events: none; }
+.workspace-graph-group rect { fill: rgba(21,26,34,.28); stroke: #2a3340; stroke-dasharray: 5 5; }
+.workspace-graph-group text { fill: var(--faint); font-size: 10px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.workspace-graph-edge { fill: none; stroke: #465165; stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.workspace-graph-node { cursor: grab; outline: none; }
+.workspace-graph-node:active { cursor: grabbing; }
+.workspace-graph-node-card { fill: #10141a; stroke: var(--line-strong); stroke-width: 1; }
+.workspace-graph-node:hover .workspace-graph-node-card, .workspace-graph-node.active .workspace-graph-node-card { fill: #151a22; stroke: var(--accent); }
+.workspace-graph-node.selected .workspace-graph-node-card { stroke: #7483ff; stroke-width: 2; }
+.workspace-graph-server-chip { fill: #1a2029; }
+.workspace-graph-server { fill: #aeb9c7; font-size: 9px; font-weight: 700; text-transform: uppercase; pointer-events: none; }
+.workspace-graph-capability { fill: var(--text); font-size: 12px; font-weight: 750; pointer-events: none; }
+.workspace-graph-kind { fill: var(--faint); font-size: 8px; font-weight: 800; text-transform: uppercase; pointer-events: none; }
+.workspace-graph-status { fill: var(--faint); pointer-events: none; }
+.workspace-graph-status.complete { fill: var(--green); }
+.workspace-graph-status.error { fill: var(--red); }
+.workspace-graph-status.running { fill: var(--blue); }
+.workspace-graph-selection { fill: #0c1015; stroke: #566176; pointer-events: none; }
+.workspace-graph-check { fill: none; stroke: #9aa7ff; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
 .workspace-empty { width: min(520px, 100%); margin: 56px auto; padding: 18px; border: 1px solid var(--line); border-radius: 12px; background: rgba(16, 20, 26, .96); }
 .workspace-empty p { color: var(--muted); line-height: 1.55; }
 .capability-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; align-items: start; }
@@ -246,7 +276,7 @@ textarea { width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, mono
   .status-footer { gap: 7px; }
 }
 
-/* --- UX-4/5/6/7/8 shared components (chips, projection pickers, tables) --- */
+/* --- UX-4/5/6/7/8 shared components (restored, sibling styles.css lacked these) --- */
 .page-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
 .page-header h2 { margin: 0; }
 
@@ -256,7 +286,6 @@ textarea { width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, mono
 
 .projection-picker { display: flex; gap: 5px; }
 
-/* --- UX-4 Capability Catalog --- */
 .catalog-toolbar { flex-direction: column; align-items: stretch; gap: 10px; padding: 12px 14px; }
 .catalog-search { height: 32px; padding: 0 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-raised); color: #dbe4ef; width: 100%; max-width: 320px; }
 .catalog-filter-group { display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
@@ -265,7 +294,6 @@ textarea { width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, mono
 .catalog-table { font-size: 12px; }
 .catalog-table td { vertical-align: top; }
 
-/* --- Modal (AddToWorkspaceModal) --- */
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, 0.55); display: grid; place-items: center; z-index: 60; }
 .modal-panel { width: min(560px, 92vw); background: #10151c; border: 1px solid var(--line-strong); border-radius: 12px; box-shadow: 0 22px 60px rgba(0, 0, 0, 0.4); padding: 18px; display: flex; flex-direction: column; gap: 12px; }
 .modal-panel h3 { margin: 0; }
@@ -276,7 +304,6 @@ textarea { width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, mono
 
 .form-status { color: var(--accent); background: rgba(115, 130, 255, 0.08); border: 1px solid rgba(115, 130, 255, 0.28); border-radius: 8px; padding: 8px 10px; font-size: 12px; }
 
-/* --- UX-5 Structured comparison --- */
 .comparison-view { gap: 12px; }
 .comparison-lanes { display: flex; flex-direction: column; gap: 14px; }
 .comparison-lane-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 4px; }
@@ -284,7 +311,6 @@ textarea { width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, mono
 .comparison-table td.comparison-cell { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; word-break: break-word; }
 .comparison-table tr.comparison-changed td { background: rgba(239, 183, 94, 0.06); border-left: 2px solid var(--amber, #efb75e); }
 
-/* --- UX-6 Agent Run Timeline --- */
 .agent-timeline { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; }
 .agent-timeline-head { font-size: 11px; }
 .agent-timeline-lanes { display: flex; flex-direction: column; gap: 4px; }
@@ -297,7 +323,6 @@ textarea { width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, mono
 .timeline-exec-active { background: #5ba9ff; }
 .timeline-span { background: #a28cff; }
 
-/* --- UX-8 Packet preview --- */
 .packet-preview { gap: 8px; }
 .packet-category-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 4px 12px; }
 .packet-category-list li { display: flex; justify-content: space-between; gap: 8px; padding: 4px 8px; border: 1px solid transparent; border-radius: 6px; font-size: 11.5px; }
@@ -307,22 +332,3 @@ textarea { width: 100%; font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, mono
 .packet-cat-excluded { color: #687487; }
 .packet-cat-name { font-weight: 500; }
 .packet-cat-status { font-size: 10.5px; }
-
-/* --- UX-3 Workspace Graph (hand-rolled SVG, no library) --- */
-.workspace-graph { display: flex; flex-direction: column; gap: 8px; height: 100%; min-height: 400px; }
-.workspace-graph-toolbar { display: flex; justify-content: space-between; align-items: center; padding: 4px 10px; }
-.workspace-graph-actions { display: flex; gap: 6px; }
-.workspace-graph-actions button { height: 26px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-raised); color: #dbe4ef; padding: 0 10px; font-size: 11px; cursor: pointer; }
-.workspace-graph-actions button:hover { background: var(--panel-active); }
-.workspace-graph-canvas { flex: 1; background: #0b0e12; border: 1px solid var(--line); border-radius: 10px; touch-action: none; user-select: none; cursor: grab; }
-.workspace-graph-canvas:active { cursor: grabbing; }
-.workspace-graph-node { cursor: pointer; }
-.workspace-graph-node-body { fill: #11161d; stroke: #303947; stroke-width: 1; transition: stroke .12s; }
-.workspace-graph-node:hover .workspace-graph-node-body { stroke: var(--line-strong); }
-.workspace-graph-node-selected .workspace-graph-node-body { stroke: var(--accent); stroke-width: 1.6; }
-.workspace-graph-node-label { fill: #dbe4ef; font-size: 12px; font-weight: 600; font-family: Inter, ui-sans-serif, -apple-system, sans-serif; }
-.workspace-graph-node-server { fill: #8b95a4; font-size: 10.5px; font-family: Inter, ui-sans-serif, -apple-system, sans-serif; }
-.workspace-graph-status-ok { fill: #3bc996; }
-.workspace-graph-status-warn { fill: #efb75e; }
-.workspace-graph-status-err { fill: #ff6d7c; }
-.workspace-graph-status-idle { fill: #687487; }

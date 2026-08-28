@@ -8,6 +8,7 @@ import {
 } from "../api/client";
 import type { CompareResult, ExecutionDetail, ExecutionRecord, JsonValue } from "../api/types";
 import { RendererView } from "../renderer-view";
+import { ComparisonView } from "../components/ComparisonView";
 
 export function ExecutionsPage() {
   const [executions, setExecutions] = useState<ExecutionRecord[]>([]);
@@ -88,12 +89,7 @@ export function ExecutionsPage() {
         </tbody>
       </table>
 
-      {compareResult && (
-        <div className="panel">
-          <h3>Comparison</h3>
-          <pre>{JSON.stringify(compareResult, null, 2)}</pre>
-        </div>
-      )}
+      {compareResult && <ComparisonView compare={compareResult} />}
 
       {selectedId && <ExecutionDetailView id={selectedId} onChanged={refresh} />}
     </div>

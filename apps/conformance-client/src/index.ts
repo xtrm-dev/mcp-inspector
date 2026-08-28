@@ -7,6 +7,14 @@
  *   MCP_CONFORMANCE_SCENARIO       — scenario name (e.g. "initialize", "tools_call")
  *   MCP_CONFORMANCE_CONTEXT        — JSON blob of scenario-specific inputs
  *   MCP_CONFORMANCE_PROTOCOL_VERSION — optional pin (e.g. "2026-07-28")
+ *   MCP_CONFORMANCE_BEARER_TOKEN   — R9: opaque access token; sent as
+ *                                    `Authorization: Bearer <token>` on
+ *                                    every request. Use for scenarios that
+ *                                    exercise a real OAuth resource-server
+ *                                    without the runtime OAuth code-flow.
+ *   MCP_CONFORMANCE_CUSTOM_HEADERS — R9: JSON object `{ header: value }`.
+ *                                    Merged into `descriptor.customHeaders`
+ *                                    for API-key-gated scenarios.
  *
  * The runner exits 0 on scenario success, 1 on failure. It routes through
  * MCP Inspector X's live SDK adapter so the harness exercises the same seam
@@ -60,6 +68,30 @@ async function main(): Promise<void> {
     url,
     protocol: { policy: derivePolicy() },
   };
+
+  // R9: opt-in credential surfaces for OAuth-required / API-key-gated
+  // conformance scenarios. Never logged; the harness supplies these
+  // through env at invocation and the values reach the wire through
+  // the same descriptor path production servers use.
+  const bearerToken = process.env["MCP_CONFORMANCE_BEARER_TOKEN"];
+  if (bearerToken !== undefined && bearerToken !== "") {
+    descriptor.bearerToken = bearerToken;
+  }
+  const rawHeaders = process.env["MCP_CONFORMANCE_CUSTOM_HEADERS"];
+  if (rawHeaders !== undefined && rawHeaders !== "") {
+    try {
+      const parsed = JSON.parse(rawHeaders) as unknown;
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        const record: Record<string, string> = {};
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          if (typeof v === "string") record[k] = v;
+        }
+        if (Object.keys(record).length > 0) descriptor.customHeaders = record;
+      }
+    } catch {
+      fail("MCP_CONFORMANCE_CUSTOM_HEADERS must be a JSON object of string → string");
+    }
+  }
 
   try {
     const negotiation = await adapter.connect(descriptor);

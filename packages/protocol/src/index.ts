@@ -162,6 +162,47 @@ export interface McpClientAdapter {
     description?: string;
     evidence: ProtocolEvidence;
   }>;
+  /**
+   * Tasks extension (`io.modelcontextprotocol/tasks`, MCP `2026-07-28`).
+   * Poll a server-issued task handle. Wire: JSON-RPC method `tasks/get`,
+   * params `{ taskId }`. Over Streamable HTTP the request MUST carry
+   * `Mcp-Method: tasks/get` and `Mcp-Name: <taskId>` per the extension.
+   * Response envelope carries `status` in {`working` | `input_required`
+   * | `completed` | `failed` | `cancelled`}, and — when `completed` — a
+   * `result` shaped like a normal `tools/call` return.
+   *
+   * `tasks/list` and `tasks/result` are HISTORICAL. Adapter implementations
+   * MUST NOT emit them; strict servers reject them.
+   */
+  getTask(input: {
+    serverId: string;
+    taskId: string;
+    signal?: AbortSignal;
+  }): Promise<{ value: JsonValue; evidence: ProtocolEvidence }>;
+  /**
+   * Tasks extension: provide `inputResponses` (and a byte-exact echo of
+   * `requestState`) to a task whose current status is `input_required`.
+   * Wire: JSON-RPC method `tasks/update`, params
+   * `{ taskId, inputResponses?, requestState? }`. Not blocked by SDK #2598.
+   */
+  updateTask(input: {
+    serverId: string;
+    taskId: string;
+    inputResponses?: Record<string, JsonValue>;
+    requestState?: string;
+    signal?: AbortSignal;
+  }): Promise<{ value: JsonValue; evidence: ProtocolEvidence }>;
+  /**
+   * Tasks extension: request server-side task cancellation. Wire:
+   * JSON-RPC method `tasks/cancel`, params `{ taskId }`. Distinct from
+   * transport-level cancellation (SSE close on HTTP; `notifications/cancelled`
+   * on stdio).
+   */
+  cancelTask(input: {
+    serverId: string;
+    taskId: string;
+    signal?: AbortSignal;
+  }): Promise<{ value: JsonValue; evidence: ProtocolEvidence }>;
   disconnect(serverId: string): Promise<void>;
 }
 
@@ -169,21 +210,31 @@ export interface McpClientAdapter {
  * Stable seam around the official MCP SDK. The live implementation is added only
  * after its modern-era behavior is covered by conformance tests; product layers
  * depend on this interface rather than SDK-specific lifecycle details.
+ *
+ * v4 (R1): getTask / updateTask / cancelTask added for the Tasks extension
+ * raw-wire path. Callers previously polled tasks by re-invoking the same
+ * `tools/call` with `{ taskId, cancel }` in arguments; that was a domain-layer
+ * simulation, not the extension wire. The new methods speak `tasks/get`,
+ * `tasks/update`, `tasks/cancel` directly.
  */
-export const protocolAdapterContractVersion = 3 as const;
+export const protocolAdapterContractVersion = 4 as const;
 
 /**
  * Tasks extension key. Client opts in by advertising this in
  * `clientCapabilities.extensions`; server may then return
- * `resultType: 'task'` results carrying a taskId the consumer polls.
- *
- * ponytail: full poll/get/cancel lifecycle requires `@modelcontextprotocol/ext-tasks`
- * or re-declared wire schemas (SDK v2 deprecated the 2025 Task vocabulary
- * and does not ship modern Task types). This adapter advertises the
- * capability and surfaces incoming task results via evidence — polling
- * is deferred until the ext-tasks integration slice.
+ * `resultType: 'task'` results carrying a taskId the consumer polls via
+ * the Tasks extension methods on `McpClientAdapter`
+ * (`getTask` / `updateTask` / `cancelTask`).
  */
 export const TASKS_EXTENSION_KEY = "io.modelcontextprotocol/tasks" as const;
+
+/**
+ * Historical Tasks methods that MUST NOT be sent to a modern
+ * `2026-07-28` server. The extension replaces `tasks/list` and the
+ * blocking `tasks/result` with `tasks/get` (poll one) and status
+ * carried in the `tasks/get` response envelope.
+ */
+export const HISTORICAL_TASK_METHODS = ["tasks/list", "tasks/result"] as const;
 
 export { createSdkAdapter } from "./sdk-adapter";
 export {

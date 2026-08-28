@@ -246,6 +246,21 @@ export function createSdkAdapter(): McpClientAdapter {
       return out;
     },
 
+    async getTask(input) {
+      return rawTaskRequest(sessions, input.serverId, "tasks/get", { taskId: input.taskId }, input.taskId, input.signal);
+    },
+
+    async updateTask(input) {
+      const params: Record<string, unknown> = { taskId: input.taskId };
+      if (input.inputResponses !== undefined) params["inputResponses"] = input.inputResponses;
+      if (input.requestState !== undefined) params["requestState"] = input.requestState;
+      return rawTaskRequest(sessions, input.serverId, "tasks/update", params, input.taskId, input.signal);
+    },
+
+    async cancelTask(input) {
+      return rawTaskRequest(sessions, input.serverId, "tasks/cancel", { taskId: input.taskId }, input.taskId, input.signal);
+    },
+
     async disconnect(serverId: string): Promise<void> {
       const s = sessions.get(serverId);
       if (!s) return;
@@ -255,6 +270,90 @@ export function createSdkAdapter(): McpClientAdapter {
   };
 
   return adapter;
+}
+
+/**
+ * Tasks extension raw-wire request. Bypasses `Client.callTool`'s typed
+ * codec (which rejects `resultType: "task"`, SDK #2637) and the historical
+ * name registry (which rejects `tasks/get`/`tasks/cancel`, SDK #2598) by
+ * dropping to `Client.request({ method, params }, opts)` with the extension
+ * method literal. `Mcp-Method` is derived from `method` by the SDK
+ * transport; `Mcp-Name: <taskId>` is emitted via the `_meta` envelope
+ * (see `RELATED_TASK_META_KEY`), which the SDK v2 Streamable HTTP
+ * transport translates to the required header. If a future SDK release
+ * exposes public typed methods for these operations, replace this seam.
+ */
+async function rawTaskRequest(
+  sessions: Map<string, Session>,
+  serverId: string,
+  method: "tasks/get" | "tasks/update" | "tasks/cancel",
+  params: Record<string, unknown>,
+  taskId: string,
+  signal: AbortSignal | undefined,
+): Promise<{ value: JsonValue; evidence: ProtocolEvidence }> {
+  const s = requireSession(sessions, serverId);
+  const requestOpts: { signal?: AbortSignal } = {};
+  if (signal) requestOpts.signal = signal;
+  const paramsWithMeta: Record<string, unknown> = {
+    ...params,
+    _meta: { "io.modelcontextprotocol/related-task": { taskId } },
+  };
+  const result = await (s.client as unknown as {
+    request: (r: { method: string; params: Record<string, unknown> }, o: unknown) => Promise<unknown>;
+  }).request({ method, params: paramsWithMeta }, requestOpts);
+  return mapTaskResult(s.client, result, method);
+}
+
+/**
+ * Normalize a `tasks/get`/`tasks/update`/`tasks/cancel` response into
+ * MCP Inspector X's `{ value, evidence }` shape. The extension envelope
+ * carries `status` and — when `status === "completed"` — an embedded
+ * `result` shaped like a normal `tools/call` return.
+ */
+function mapTaskResult(
+  client: Client,
+  result: unknown,
+  method: "tasks/get" | "tasks/update" | "tasks/cancel",
+): { value: JsonValue; evidence: ProtocolEvidence } {
+  const era = client.getProtocolEra() as ProtocolEra | undefined;
+  const version = client.getNegotiatedProtocolVersion();
+  const responseMeta = (result as { _meta?: unknown })._meta;
+  const r = result as {
+    status?: unknown;
+    taskId?: unknown;
+    result?: unknown;
+    inputRequests?: unknown;
+    requestState?: unknown;
+    pollIntervalMs?: unknown;
+    ttlMs?: unknown;
+  };
+
+  const status = typeof r.status === "string" ? r.status : "unknown";
+  const extensions: Record<string, JsonValue> = { taskMethod: method, status };
+  if (typeof r.taskId === "string") extensions["taskId"] = r.taskId;
+  if (typeof r.pollIntervalMs === "number") extensions["pollIntervalMs"] = r.pollIntervalMs;
+  if (typeof r.ttlMs === "number") extensions["ttlMs"] = r.ttlMs;
+  if (r.inputRequests !== undefined) extensions["inputRequests"] = r.inputRequests as JsonValue;
+  if (r.requestState !== undefined) extensions["requestState"] = r.requestState as JsonValue;
+
+  if (status === "completed" && r.result !== undefined) {
+    const value = normalizeResult(r.result);
+    const evidence: ProtocolEvidence = { resultType: "complete" };
+    if (era) evidence.era = era;
+    if (version) evidence.version = version;
+    if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
+    evidence.extensions = extensions;
+    return { value, evidence };
+  }
+
+  const resultType: ProtocolEvidence["resultType"] =
+    status === "input_required" ? "input_required" : "task";
+  const evidence: ProtocolEvidence = { resultType };
+  if (era) evidence.era = era;
+  if (version) evidence.version = version;
+  if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
+  evidence.extensions = extensions;
+  return { value: null, evidence };
 }
 
 // Shared callTool + continueCall result mapping.

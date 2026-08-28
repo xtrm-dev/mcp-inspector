@@ -2161,18 +2161,22 @@ async function appendRound(c: Context, deps: GatewayDeps): Promise<Response> {
     if (!taskId) {
       return c.json({ error: `execution '${id}' has no recoverable taskId` }, 400);
     }
-    const pollArgs = { ...originalArgs, taskId, cancel: body.taskAction === "cancel" };
+    // R1: real Tasks-extension wire. `tasks/cancel` for cancel; `tasks/get`
+    // for poll. Previously this branch re-invoked `tools/call` with
+    // `{ ...originalArgs, taskId, cancel }` — a domain-layer simulation
+    // that never spoke the extension wire and would never carry the
+    // required `Mcp-Name: <taskId>` header on Streamable HTTP.
+    const isCancel = body.taskAction === "cancel";
+    const argsForEvidence: Record<string, JsonValue> = { taskAction: body.taskAction, taskId };
     try {
-      const { value, evidence } = await deps.adapter.callTool({
-        serverId,
-        name: toolName,
-        arguments: pollArgs as JsonObject,
-      });
+      const { value, evidence } = isCancel
+        ? await deps.adapter.cancelTask({ serverId, taskId })
+        : await deps.adapter.getTask({ serverId, taskId });
       const outcome = recordRoundOutcome(deps, {
         executionId: id,
         roundIndex,
         kind: "task_update",
-        argumentsJson: JSON.stringify(pollArgs),
+        argumentsJson: JSON.stringify(argsForEvidence),
         startedAt,
         serverId,
         capabilityId: execution.capabilityId,
@@ -2191,7 +2195,7 @@ async function appendRound(c: Context, deps: GatewayDeps): Promise<Response> {
         executionId: id,
         roundIndex,
         kind: "task_update",
-        argumentsJson: JSON.stringify(pollArgs),
+        argumentsJson: JSON.stringify(argsForEvidence),
         startedAt,
         serverId,
         capabilityId: execution.capabilityId,

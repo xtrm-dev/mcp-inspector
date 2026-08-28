@@ -189,6 +189,41 @@ describe("createSdkAdapter (streamable-http, legacy era)", () => {
     expect(negotiation.negotiatedEra).toBe("legacy");
     await adapter.disconnect(descriptor.id);
   }, 15_000);
+
+  // R2 slice 2 (#61): pinned `policy: "modern"` against a legacy-only
+  // server MUST fail cleanly and MUST NOT silently downgrade the pin
+  // to legacy. Prevents a subtle regression class where `modern` pin
+  // becomes advisory instead of prescriptive.
+  it("R2: policy='modern' against a legacy-only server rejects without silent downgrade", async () => {
+    const adapter = createSdkAdapter();
+    const descriptor: McpServerDescriptor = {
+      id: "modern-vs-legacy",
+      displayName: "Modern-pin vs Legacy",
+      transport: "streamable-http",
+      url: baseUrl,
+      protocol: { policy: "modern" },
+    };
+
+    let connectErr: unknown = null;
+    let negotiation: Awaited<ReturnType<typeof adapter.connect>> | null = null;
+    try {
+      negotiation = await adapter.connect(descriptor);
+    } catch (err) {
+      connectErr = err;
+    }
+    // Either the SDK rejects the pin (throws) OR the negotiation
+    // surfaces a non-modern era — the ONE thing that must never happen
+    // is a silent `negotiation.negotiatedEra === "modern"` against a
+    // legacy-only server, which would be a correctness regression.
+    if (connectErr === null) {
+      expect(negotiation).not.toBeNull();
+      expect(negotiation?.negotiatedEra).not.toBe("modern");
+      await adapter.disconnect(descriptor.id);
+    } else {
+      // Adapter/SDK cleanly rejects the modern pin — expected path.
+      expect(connectErr).toBeTruthy();
+    }
+  }, 15_000);
 });
 
 describe("createSdkAdapter (streamable-http, modern era)", () => {

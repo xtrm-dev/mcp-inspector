@@ -1,3 +1,4 @@
+export { CapabilitiesPage } from "./CapabilitiesPage";
 export { ServersPage } from "./ServersPage";
 export { WorkspacesPage } from "./WorkspacesPage";
 export { ExecutionsPage } from "./ExecutionsPage";

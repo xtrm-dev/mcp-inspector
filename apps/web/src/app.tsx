@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   AgentRunsPage,
+  CapabilitiesPage,
   CredentialsPage,
   ExecutionsPage,
   PacketsPage,
@@ -387,6 +388,7 @@ function SettingsSurface() {
 function renderView(view: Exclude<ViewId, "workspace">) {
   switch (view) {
     case "capabilities":
+      return <CapabilitiesPage />;
     case "servers":
       return <ServersPage />;
     case "executions":

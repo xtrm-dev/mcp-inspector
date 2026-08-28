@@ -510,7 +510,13 @@ Discovery must correctly handle paginated capability lists without hiding pagina
 
 ### CAP-07 — Refresh/list changes
 
-Users must be able to refresh discovery manually. Where the protocol/server supports list-change notifications or subscriptions, the product may update automatically while preserving evidence of the change.
+Users must be able to refresh discovery manually.
+
+On a modern `2026-07-28` server, list-change updates arrive through `subscriptions/listen`. Each subscription carries an acknowledgement and a `subscriptionId`; the product resumes updates after a transient disconnect by **re-listening** (not by resuming an HTTP stream). Notifications are per-request streams.
+
+The product MUST NOT rely on `resources/subscribe`, HTTP GET streams, or SSE resumability for list-change delivery on modern claims — those are historical mechanisms and are not part of the modern subscription model.
+
+Where subscriptions are advertised, the product may update automatically while preserving evidence of the change (the `subscriptionId`, the acknowledgement receipt, and the delta rendered to the user).
 
 ### CAP-08 — Add to workspace
 

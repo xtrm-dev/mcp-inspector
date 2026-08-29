@@ -20,6 +20,14 @@
 
 * { box-sizing: border-box; }
 body { margin: 0; min-width: 320px; min-height: 100vh; background: var(--bg); }
+
+/* Theme-matched scrollbars across every overflow surface. */
+* { scrollbar-width: thin; scrollbar-color: var(--panel-active) transparent; }
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--panel-active); border-radius: 4px; }
+::-webkit-scrollbar-thumb:hover { background: var(--line-strong); }
+::-webkit-scrollbar-corner { background: transparent; }
 button { font: inherit; cursor: pointer; }
 button:disabled { cursor: not-allowed; opacity: .5; }
 input, select, textarea {

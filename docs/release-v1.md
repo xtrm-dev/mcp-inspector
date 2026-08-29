@@ -265,3 +265,23 @@ promotion-ready after #87 and that CI was RED. Streams reopened:
   servers and durable evidence capture.
 - **`dev → main` promotion PR** — requires explicit user
   authorization to open; every gate above is satisfied.
+
+### Packaged verification (2026-08-29)
+
+- `npm run package` — build clean, artifact
+  `dist-package/xtrm-dev-mcp-inspector-x-1.0.0-v1.tgz`
+  sha256 `e98134d8c2922675b4780d4ec7b2ce35cd9b14c3f254b6b8be9a9a82bb4a44d3`.
+- `npm run smoke` — **11 / 11 scenarios pass**: add server, tool call,
+  workspace run, packet export, history/comparison, MRTR round
+  (`interactive_greet` input_required → input_response, same
+  executionId), Tasks lifecycle (`long_running_task` create → poll →
+  complete under one executionId), Tasks cancel (mid-run), runner
+  wiring (stdio-proxy), packaged SPA served by gateway. Evidence:
+  smoke stdout.
+- `npm run conformance` — **required scope: PASS**
+  (`required.passed: true`). Informational scoreboard shows the
+  itemized `apps/conformance-client/expected-failures.yml` baseline
+  (resources/prompts/tasks/MRTR client-side + all OAuth extensions
+  are not-yet-implemented by the conformance-client at this slice —
+  per the ADR §29.4 caveat, NOT a regression). Evidence:
+  `conformance/evidence/v1-2026-08-29.json`.

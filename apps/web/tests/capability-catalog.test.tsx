@@ -14,9 +14,13 @@ interface StubServer {
   id: string;
   displayName: string;
   connected: boolean;
-  tools: Array<{ name: string; description?: string }>;
+  tools: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
   resources?: Array<{ uri: string; name?: string; description?: string }>;
-  prompts?: Array<{ name: string; description?: string }>;
+  prompts?: Array<{
+    name: string;
+    description?: string;
+    arguments?: Array<{ name: string; description?: string; required?: boolean }>;
+  }>;
 }
 
 let container: HTMLDivElement;
@@ -286,5 +290,39 @@ describe("CapabilitiesPage — R-UX slice UX-4", () => {
       new Set(["s-1::tool::add_numbers", "s-1::tool::search"]),
     );
     expect(createNodeCalls.every((c) => c.workspaceId === "ws-test")).toBe(true);
+  });
+
+  it("renders parameters (name, type, required, description) from the tool inputSchema", async () => {
+    stubFetch([
+      {
+        id: "s-schema",
+        displayName: "Schema",
+        connected: true,
+        tools: [
+          {
+            name: "fetch_articles",
+            description: "Fetch articles by id",
+            inputSchema: {
+              type: "object",
+              properties: { ids: { type: "array", description: "article ids" } },
+              required: ["ids"],
+            },
+          },
+          { name: "noargs", description: "no schema" },
+        ],
+      },
+    ]);
+    await act(async () => {
+      root.render(<CapabilitiesPage />);
+    });
+    await flush();
+    const text = container.textContent ?? "";
+    expect(text).toContain("ids");
+    expect(text).toContain("array");
+    expect(text).toContain("required");
+    expect(text).toContain("article ids");
+    // Absent schema row still renders (no throw); the "—" fallback appears.
+    expect(text).toContain("noargs");
+    expect(text).toContain("—");
   });
 });

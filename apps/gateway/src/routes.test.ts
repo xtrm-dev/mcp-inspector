@@ -306,7 +306,12 @@ describe("gateway HTTP routes (wired to the SDK adapter + demo MCP)", () => {
       evidenceRefs: Array<{ id: string; kind: string; artifactRef: string }>;
     };
     expect(body.value).toEqual({ sum: 15 });
-    expect(body.evidenceRefs).toHaveLength(1);
+    // The tool-call route emits three evidence rows now: the pre-existing
+    // ProtocolEvidence summary (kind: raw_response) plus the two wire
+    // artifacts the HTTP recorder appends — raw_request + raw_response.
+    const kinds = body.evidenceRefs.map((e) => e.kind);
+    expect(kinds).toContain("raw_request");
+    expect(kinds.filter((k) => k === "raw_response").length).toBeGreaterThanOrEqual(1);
     const record = storage.executions.get(body.executionId);
     expect(record?.status).toBe("complete");
     const rounds = storage.rounds.listForExecution(body.executionId);

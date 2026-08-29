@@ -8,6 +8,7 @@ import {
   type JsonValue,
   type McpClientAdapter,
   type ProtocolEvidence,
+  type WireCapture,
 } from "@mcp-inspector-x/protocol";
 import type {
   Storage,
@@ -40,6 +41,7 @@ import {
 import type { ServerManager } from "./servers";
 import type { SecretsRegistry } from "./secrets";
 import { compareExecutions } from "./compare";
+import { persistWireArtifacts } from "./wire-artifacts";
 import { buildPacket, renderPacketMarkdown } from "./packets";
 import {
   runWorkspace,
@@ -739,7 +741,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     const unregister = registerInFlight(execution.id, controller);
     const startedAt = new Date();
     try {
-      const { value, evidence } = await deps.adapter.callTool({
+      const { value, evidence, rawWire } = await deps.adapter.callTool({
         serverId: id,
         name,
         arguments: args as Parameters<McpClientAdapter["callTool"]>[0]["arguments"],
@@ -767,6 +769,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         kind: "raw_response",
         artifactRef: evidenceBlob.hash,
       });
+      const wireRows = persistWireArtifacts(deps.storage, execution.id, rawWire);
 
       // Phase G: derive MRTR / Tasks status from the adapter's evidence.
       // Persist requestState/taskId into the round's inline JSON so
@@ -829,7 +832,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
           capabilityId,
           status: nextStatus,
           durationMs: round.durationMs,
-          evidenceRefs: [evidenceRow.id],
+          evidenceRefs: [evidenceRow.id, ...wireRows.map((r) => r.id)],
           resultInline: inlineResultForRound !== null,
           resultArtifact: resultArtifactForRound,
         },
@@ -869,7 +872,10 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         executionId: done.id,
         status: nextStatus,
         evidence,
-        evidenceRefs: [{ id: evidenceRow.id, kind: evidenceRow.kind, artifactRef: evidenceRow.artifactRef }],
+        evidenceRefs: [
+          { id: evidenceRow.id, kind: evidenceRow.kind, artifactRef: evidenceRow.artifactRef },
+          ...wireRows.map((r) => ({ id: r.id, kind: r.kind, artifactRef: r.artifactRef })),
+        ],
         suggestedRenderer: surface.kind,
         spilled: surface.spilled,
       };
@@ -2091,6 +2097,7 @@ interface RoundOutcomeInput {
   startedAt: Date;
   serverId: string;
   capabilityId: string;
+  rawWire?: WireCapture | null;
   value: JsonValue;
   evidence: ProtocolEvidence;
 }
@@ -2151,6 +2158,7 @@ function recordRoundOutcome(
     kind: "raw_response",
     artifactRef: evidenceBlob.hash,
   });
+  const wireRows = persistWireArtifacts(deps.storage, input.executionId, input.rawWire ?? null);
 
   let status: string;
   let endedAtIso: string | null;
@@ -2196,7 +2204,7 @@ function recordRoundOutcome(
       capabilityId: input.capabilityId,
       status,
       durationMs: round.durationMs,
-      evidenceRefs: [evidenceRow.id],
+      evidenceRefs: [evidenceRow.id, ...wireRows.map((r) => r.id)],
       resultInline: inlineResult !== null,
       resultArtifact,
     },
@@ -2288,7 +2296,7 @@ async function appendRound(c: Context, deps: GatewayDeps): Promise<Response> {
       return c.json({ error: `execution '${id}' has no recoverable requestState` }, 400);
     }
     try {
-      const { value, evidence } = await deps.adapter.continueCall({
+      const { value, evidence, rawWire } = await deps.adapter.continueCall({
         serverId,
         name: toolName,
         arguments: originalArgs as JsonObject,
@@ -2305,6 +2313,7 @@ async function appendRound(c: Context, deps: GatewayDeps): Promise<Response> {
         capabilityId: execution.capabilityId,
         value,
         evidence,
+        rawWire: rawWire ?? null,
       });
       return c.json({
         executionId: id,

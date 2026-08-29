@@ -2,6 +2,7 @@ import { runConcurrent } from "@mcp-inspector-x/execution";
 import type { JsonObject, McpClientAdapter } from "@mcp-inspector-x/protocol";
 import type { Storage, WorkspaceNode } from "@mcp-inspector-x/storage";
 import type { ServerManager } from "./servers";
+import { persistWireArtifacts } from "./wire-artifacts";
 
 // Same inline threshold as the tool-call route. Keep in one place so future
 // tuning applies uniformly.
@@ -172,7 +173,7 @@ export async function executeTool(
     // (`callOpts.signal`) into `Client.callTool()`, which extends
     // RequestOptions per index.d.mts:1807. That's the mechanism this
     // controller's signal rides on.
-    const { value, evidence } = await deps.adapter.callTool({
+    const { value, evidence, rawWire } = await deps.adapter.callTool({
       serverId: input.serverId,
       name: input.name,
       arguments: input.arguments as JsonObject,
@@ -200,6 +201,7 @@ export async function executeTool(
       kind: "raw_response",
       artifactRef: evidenceBlob.hash,
     });
+    const wireRows = persistWireArtifacts(deps.storage, execution.id, rawWire);
 
     const round = deps.storage.rounds.append({
       executionId: execution.id,
@@ -220,7 +222,7 @@ export async function executeTool(
         serverId: input.serverId,
         capabilityId,
         durationMs: round.durationMs,
-        evidenceRefs: [evidenceRow.id],
+        evidenceRefs: [evidenceRow.id, ...wireRows.map((r) => r.id)],
       },
     });
 
@@ -231,6 +233,7 @@ export async function executeTool(
       evidence,
       evidenceRefs: [
         { id: evidenceRow.id, kind: evidenceRow.kind, artifactRef: evidenceRow.artifactRef },
+        ...wireRows.map((r) => ({ id: r.id, kind: r.kind, artifactRef: r.artifactRef })),
       ],
       durationMs: endedAt.getTime() - startedAt.getTime(),
     };

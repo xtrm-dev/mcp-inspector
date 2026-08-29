@@ -28,11 +28,41 @@ const emptyForm = {
   displayName: "",
   transport: "streamable-http" as Transport,
   endpoint: "",
+  command: "",
+  argsText: "",
+  cwd: "",
+  envText: "",
   authKind: "none" as AuthKind,
   headerName: "X-API-Key",
   authValue: "",
   connectNow: true,
 };
+
+// Parses KEY=VALUE lines (blank lines and `#`-prefixed comments skipped) into
+// a record. Whitespace around KEY is trimmed; VALUE is used verbatim so
+// trailing spaces or `=` characters in the value survive.
+function parseEnvText(raw: string): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = line.indexOf("=");
+    if (eq <= 0) throw new Error(`invalid env line (expected KEY=VALUE): ${line}`);
+    const key = line.slice(0, eq).trim();
+    if (!key) throw new Error(`invalid env line (blank key): ${line}`);
+    out[key] = line.slice(eq + 1);
+  }
+  return out;
+}
+
+// Splits an argv string on whitespace, honouring simple single/double quotes.
+function parseArgsText(raw: string): string[] {
+  const out: string[] = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(raw)) !== null) out.push(match[1] ?? match[2] ?? match[3] ?? "");
+  return out;
+}
 
 export function ServersPage() {
   const [servers, setServers] = useState<ServerSummary[]>([]);
@@ -91,14 +121,25 @@ export function ServersPage() {
           headerCredentials = { [form.headerName]: cred.credentialRef.id };
         }
       }
-      await createServer({
+      const stdio = form.transport === "stdio";
+      if (stdio && !form.command.trim()) {
+        throw new Error("command is required for stdio transport");
+      }
+      const input: import("../api/types").CreateServerInput = {
         displayName: form.displayName,
         transport: form.transport,
-        endpoint: form.endpoint || null,
+        endpoint: stdio ? null : (form.endpoint || null),
         credentialRefId,
         headerCredentials,
         connectNow: form.connectNow,
-      });
+      };
+      if (stdio) {
+        input.command = form.command.trim();
+        if (form.argsText.trim()) input.args = parseArgsText(form.argsText);
+        if (form.cwd.trim()) input.cwd = form.cwd.trim();
+        if (form.envText.trim()) input.env = parseEnvText(form.envText);
+      }
+      await createServer(input);
       setForm(emptyForm);
       refresh();
     } catch (err) {
@@ -131,10 +172,16 @@ export function ServersPage() {
               <option value="stdio">stdio</option>
             </select>
           </label>
-          <label>
-            Endpoint
-            <input value={form.endpoint} onChange={(e) => setForm({ ...form, endpoint: e.target.value })} />
-          </label>
+          {form.transport === "streamable-http" && (
+            <label>
+              Endpoint
+              <input
+                data-testid="server-endpoint"
+                value={form.endpoint}
+                onChange={(e) => setForm({ ...form, endpoint: e.target.value })}
+              />
+            </label>
+          )}
           <label className="checkbox-label">
             <input
               type="checkbox"
@@ -144,6 +191,48 @@ export function ServersPage() {
             Connect now
           </label>
         </div>
+        {form.transport === "stdio" && (
+          <div className="field-row stdio-config">
+            <label>
+              Command
+              <input
+                data-testid="stdio-command"
+                required
+                value={form.command}
+                placeholder="/usr/local/bin/my-mcp-server"
+                onChange={(e) => setForm({ ...form, command: e.target.value })}
+              />
+            </label>
+            <label>
+              Args
+              <input
+                data-testid="stdio-args"
+                value={form.argsText}
+                placeholder='--flag value "arg with spaces"'
+                onChange={(e) => setForm({ ...form, argsText: e.target.value })}
+              />
+            </label>
+            <label>
+              Working directory
+              <input
+                data-testid="stdio-cwd"
+                value={form.cwd}
+                placeholder="/opt/servers/foo"
+                onChange={(e) => setForm({ ...form, cwd: e.target.value })}
+              />
+            </label>
+            <label className="stdio-env">
+              Env (KEY=VALUE per line)
+              <textarea
+                data-testid="stdio-env"
+                rows={3}
+                value={form.envText}
+                placeholder={"MCP_LOG_LEVEL=info\nMY_API_KEY=..."}
+                onChange={(e) => setForm({ ...form, envText: e.target.value })}
+              />
+            </label>
+          </div>
+        )}
         {form.transport === "streamable-http" && (
           <div className="field-row">
             <label>

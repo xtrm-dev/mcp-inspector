@@ -10,7 +10,10 @@ import {
   WorkspacesPage,
 } from "./pages";
 import {
+  buildInvestigationPacket,
+  compareExecutionsApi,
   createWorkspace,
+  deleteWorkspaceNode,
   getExecution,
   getServerCapabilities,
   getWorkspace,
@@ -23,15 +26,19 @@ import {
 } from "./api/client";
 import { parseCapabilityId } from "./api/capability-id";
 import type {
+  CompareResult,
   ExecutionDetail,
   ExecutionRecord,
+  InvestigationPacket,
   ServerSummary,
   WorkspaceNodePresentation,
   WorkspaceNodeRow,
   WorkspaceRow,
   WorkspaceRunResult,
 } from "./api/types";
+import type { WorkspaceEdge } from "@mcp-inspector-x/workspace";
 import { CapabilityInspector, WorkspaceProjections, type NodeProjectionProps } from "./components/WorkspaceProjections";
+import { ComparisonView } from "./components/ComparisonView";
 import {
   WorkspaceGraph,
   readWorkspaceLayout,
@@ -70,6 +77,8 @@ export function App() {
   const [executionHistory, setExecutionHistory] = useState<Map<string, ExecutionRecord[]>>(new Map());
   const [descriptions, setDescriptions] = useState<Map<string, string>>(new Map());
   const [runResult, setRunResult] = useState<WorkspaceRunResult | null>(null);
+  const [bulkCompare, setBulkCompare] = useState<CompareResult | null>(null);
+  const [bulkPacket, setBulkPacket] = useState<{ kind: "handoff"; text: string } | { kind: "export"; packet: InvestigationPacket } | null>(null);
   const [loading, setLoading] = useState(true);
   const [workspaceLoading, setWorkspaceLoading] = useState(false);
   const [running, setRunning] = useState(false);
@@ -139,6 +148,7 @@ export function App() {
   const projection = workspaceLayout.projection;
   const serversById = useMemo(() => new Map(servers.map((server) => [server.id, server])), [servers]);
   const connectedServers = servers.filter((server) => server.connected);
+  const workspaceEdges = useMemo(() => deriveWorkspaceEdges(nodes), [nodes]);
 
   function setWorkspaceLayoutState(next: WorkspaceLayoutState) {
     workspaceLayoutRef.current = next;
@@ -269,6 +279,88 @@ export function App() {
     }
   }
 
+  function latestExecutionIdsForSelection(): string[] {
+    return [...selectedNodeIds].flatMap((nodeId) => {
+      const detail = executionDetails.get(nodeId);
+      if (detail) return [detail.execution.id];
+      const latest = executionHistory.get(nodeId)?.[0];
+      return latest ? [latest.id] : [];
+    });
+  }
+
+  async function exportSelected() {
+    if (selectedNodeIds.size === 0) return;
+    setError(null);
+    setBulkCompare(null);
+    const executionIds = latestExecutionIdsForSelection();
+    if (executionIds.length === 0) {
+      setError("Selected nodes have no captured executions yet — run them first.");
+      return;
+    }
+    try {
+      const result = await buildInvestigationPacket({ executionIds, tier: "investigation", format: "json" });
+      if (typeof result !== "string") setBulkPacket({ kind: "export", packet: result.packet });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async function handoffSelected() {
+    if (selectedNodeIds.size === 0) return;
+    setError(null);
+    setBulkCompare(null);
+    const executionIds = latestExecutionIdsForSelection();
+    if (executionIds.length === 0) {
+      setError("Selected nodes have no captured executions yet — run them first.");
+      return;
+    }
+    try {
+      const result = await buildInvestigationPacket({ executionIds, tier: "investigation", format: "markdown" });
+      if (typeof result === "string") setBulkPacket({ kind: "handoff", text: result });
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async function compareSelected() {
+    if (selectedNodeIds.size !== 2) return;
+    setError(null);
+    setBulkPacket(null);
+    const executionIds = latestExecutionIdsForSelection();
+    if (executionIds.length !== 2) {
+      setError("Compare needs two selected nodes with at least one captured execution each.");
+      return;
+    }
+    const [leftId, rightId] = executionIds;
+    if (!leftId || !rightId) return;
+    try {
+      const compare = await compareExecutionsApi(leftId, rightId);
+      setBulkCompare(compare);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
+  async function removeSelected() {
+    if (!activeWorkspaceId || selectedNodeIds.size === 0) return;
+    setError(null);
+    const workspaceId = activeWorkspaceId;
+    const ids = [...selectedNodeIds];
+    try {
+      await Promise.all(ids.map((nodeId) => deleteWorkspaceNode(workspaceId, nodeId)));
+      setNodes((current) => current.filter((node) => !selectedNodeIds.has(node.id)));
+      commitWorkspaceLayout((current) => ({
+        ...current,
+        selectedNodeIds: current.selectedNodeIds.filter((id) => !selectedNodeIds.has(id)),
+      }));
+      setSelectedNodeId((current) => current && selectedNodeIds.has(current) ? null : current);
+      setBulkCompare(null);
+      setBulkPacket(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason));
+    }
+  }
+
   function toggleSelectedNode(nodeId: string) {
     commitWorkspaceLayout((current) => {
       const selected = new Set(current.selectedNodeIds);
@@ -364,6 +456,7 @@ export function App() {
           <WorkspaceCanvas
             workspace={activeWorkspace}
             nodes={nodes}
+            edges={workspaceEdges}
             servers={serversById}
             selectedNodeId={selectedNodeId}
             selectedNodeIds={selectedNodeIds}
@@ -383,6 +476,13 @@ export function App() {
             onGraphLayoutChange={changeGraphLayout}
             onPresentationChange={(node, presentation) => void changePresentation(node, presentation)}
             onRunSelected={() => void runNodes([...selectedNodeIds])}
+            onExportSelected={() => void exportSelected()}
+            onCompareSelected={() => void compareSelected()}
+            onRemoveSelected={() => void removeSelected()}
+            onHandoffSelected={() => void handoffSelected()}
+            bulkCompare={bulkCompare}
+            bulkPacket={bulkPacket}
+            onDismissBulk={() => { setBulkCompare(null); setBulkPacket(null); }}
             onCreateWorkspace={createFirstWorkspace}
             onOpenManager={() => setView("settings")}
           />
@@ -440,6 +540,7 @@ function NavButton({
 function WorkspaceCanvas({
   workspace,
   nodes,
+  edges,
   servers,
   selectedNodeId,
   selectedNodeIds,
@@ -459,11 +560,19 @@ function WorkspaceCanvas({
   onGraphLayoutChange,
   onPresentationChange,
   onRunSelected,
+  onExportSelected,
+  onCompareSelected,
+  onRemoveSelected,
+  onHandoffSelected,
+  bulkCompare,
+  bulkPacket,
+  onDismissBulk,
   onCreateWorkspace,
   onOpenManager,
 }: {
   workspace: WorkspaceRow | null;
   nodes: WorkspaceNodeRow[];
+  edges: WorkspaceEdge[];
   servers: Map<string, ServerSummary>;
   selectedNodeId: string | null;
   selectedNodeIds: Set<string>;
@@ -483,6 +592,13 @@ function WorkspaceCanvas({
   onGraphLayoutChange: (layout: GraphLayout) => void;
   onPresentationChange: (node: WorkspaceNodeRow, presentation: WorkspaceNodePresentation) => void;
   onRunSelected: () => void;
+  onExportSelected: () => void;
+  onCompareSelected: () => void;
+  onRemoveSelected: () => void;
+  onHandoffSelected: () => void;
+  bulkCompare: CompareResult | null;
+  bulkPacket: { kind: "handoff"; text: string } | { kind: "export"; packet: InvestigationPacket } | null;
+  onDismissBulk: () => void;
   onCreateWorkspace: (name: string) => Promise<void>;
   onOpenManager: () => void;
 }) {
@@ -507,8 +623,28 @@ function WorkspaceCanvas({
         <span className="muted">{nodes.length} nodes · {selectedNodeIds.size} selected</span>
         <div className="topbar-spacer" />
         <button data-testid="run-selected" className="button" onClick={onRunSelected} disabled={selectedNodeIds.size === 0 || running}>Run selected</button>
+        <button data-testid="export-selected" className="button" onClick={onExportSelected} disabled={selectedNodeIds.size === 0}>Export selected</button>
+        <button data-testid="compare-selected" className="button" onClick={onCompareSelected} disabled={selectedNodeIds.size !== 2}>Compare selected</button>
+        <button data-testid="handoff-selected" className="button" onClick={onHandoffSelected} disabled={selectedNodeIds.size === 0}>Handoff selected</button>
+        <button data-testid="remove-selected" className="button" onClick={onRemoveSelected} disabled={selectedNodeIds.size === 0}>Remove selected</button>
         <button className="button" onClick={onOpenManager}>Manage workspace</button>
       </div>
+
+      {(bulkCompare || bulkPacket) && (
+        <div className="panel bulk-output" data-testid="bulk-output">
+          <div className="bulk-output-head">
+            <strong>
+              {bulkCompare && "Comparison"}
+              {bulkPacket?.kind === "handoff" && "Handoff packet (markdown)"}
+              {bulkPacket?.kind === "export" && "Investigation packet"}
+            </strong>
+            <button className="button" onClick={onDismissBulk}>Dismiss</button>
+          </div>
+          {bulkCompare && <ComparisonView compare={bulkCompare} />}
+          {bulkPacket?.kind === "handoff" && <pre data-testid="bulk-handoff-text">{bulkPacket.text}</pre>}
+          {bulkPacket?.kind === "export" && <pre data-testid="bulk-export-json">{JSON.stringify(bulkPacket.packet, null, 2)}</pre>}
+        </div>
+      )}
 
       <div className={`canvas-scroll ${projection === "graph" ? "graph-mode" : ""}`}>
         {error && <p className="form-error canvas-message">{error}</p>}
@@ -549,7 +685,7 @@ function WorkspaceCanvas({
             selectedNodeIds={selectedNodeIds}
             executionDetails={executionDetails}
             runResult={runResult}
-            edges={[]}
+            edges={edges}
             layout={graphLayout}
             onSelectNode={onSelectGraphNode}
             onLayoutChange={onGraphLayoutChange}
@@ -623,6 +759,32 @@ function renderView(view: Exclude<ViewId, "workspace">) {
     case "settings":
       return <SettingsSurface />;
   }
+}
+
+// Derives sibling edges for every pair of consecutive workspace nodes that
+// share a serverId, so the graph projection shows real "same-runtime"
+// relationships instead of an empty edge list. ponytail: this edge model
+// mirrors the existing server-grouping boxes; richer binding-derived edges
+// (argument-to-result wiring) land when the WorkspaceEdge.binding metadata
+// is populated by the workspace API.
+function deriveWorkspaceEdges(nodes: WorkspaceNodeRow[]): WorkspaceEdge[] {
+  const bySever = new Map<string, WorkspaceNodeRow[]>();
+  for (const node of nodes) {
+    if (!node.serverId) continue;
+    const list = bySever.get(node.serverId) ?? [];
+    list.push(node);
+    bySever.set(node.serverId, list);
+  }
+  const edges: WorkspaceEdge[] = [];
+  for (const [serverId, siblings] of bySever) {
+    for (let i = 0; i < siblings.length - 1; i++) {
+      const from = siblings[i];
+      const to = siblings[i + 1];
+      if (!from || !to) continue;
+      edges.push({ id: `${serverId}:${from.id}->${to.id}`, fromNodeId: from.id, toNodeId: to.id });
+    }
+  }
+  return edges;
 }
 
 function protocolSummary(servers: ServerSummary[]) {

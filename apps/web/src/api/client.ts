@@ -277,6 +277,22 @@ export const listSourceRevisions = (opts?: { repositoryRef?: string; limit?: num
   return request(`/api/v1/source/revisions${qs ? `?${qs}` : ""}`);
 };
 
+export const getSourceGraph = (
+  revisionId: string,
+): Promise<import("./types").SourceGraphResponse> =>
+  request(`/api/v1/source/revisions/${encodeURIComponent(revisionId)}/graph`);
+
+export const getSourceCode = (
+  revisionId: string,
+  filePath: string,
+  handlerSymbol: string,
+): Promise<import("./types").SourceCodeResponse> => {
+  const params = new URLSearchParams({ filePath, handlerSymbol });
+  return request(
+    `/api/v1/source/revisions/${encodeURIComponent(revisionId)}/code?${params.toString()}`,
+  );
+};
+
 // ---- Config ----
 
 export const getConfig = (): Promise<{ apiVersion: string; capabilities: Record<string, boolean> }> =>

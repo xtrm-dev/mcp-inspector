@@ -264,6 +264,16 @@ const V9_HEADER_CREDENTIALS = `
 ALTER TABLE server_definition ADD COLUMN header_credentials_json TEXT;
 `;
 
+// Stream E — Runtime + Combined source graph and Full-symbol / Full-file /
+// Deps / Dependents / Runtime trace sub-views need per-mapping call-graph
+// edges plus optional full symbol / full file text. Columns are nullable so
+// the ingest contract stays backwards-compatible with slice-3 payloads.
+const V10_CAPABILITY_SOURCE_MAPPING_CALLS_AND_TEXT = `
+ALTER TABLE capability_source_mapping ADD COLUMN calls_json TEXT;
+ALTER TABLE capability_source_mapping ADD COLUMN symbol_text TEXT;
+ALTER TABLE capability_source_mapping ADD COLUMN file_text TEXT;
+`;
+
 export const MIGRATIONS: readonly Migration[] = [
   { version: 1, name: "schema-v1", sql: V1_SCHEMA },
   { version: 2, name: "agent-run-links", sql: V2_AGENT_RUN_LINKS },
@@ -274,6 +284,11 @@ export const MIGRATIONS: readonly Migration[] = [
   { version: 7, name: "trace-correlation", sql: V7_TRACE_CORRELATION },
   { version: 8, name: "execution-metadata-json", sql: V8_EXECUTION_METADATA_JSON },
   { version: 9, name: "server-header-credentials", sql: V9_HEADER_CREDENTIALS },
+  {
+    version: 10,
+    name: "capability-source-mapping-calls-and-text",
+    sql: V10_CAPABILITY_SOURCE_MAPPING_CALLS_AND_TEXT,
+  },
 ];
 
 export function checksum(sql: string): string {

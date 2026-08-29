@@ -56,6 +56,14 @@ export interface SourceMappingEntry {
   lineStart: number;
   lineEnd: number;
   snippet?: string;
+  // Optional extras for Stream E — Runtime + Combined graphs and the code
+  // viewer's Full-symbol / Full-file / Deps / Dependents sub-views. All
+  // additive so existing ingest callers stay valid. `calls` is a list of
+  // symbol keys (`${filePath}#${handlerSymbol}` — stable across ingest)
+  // that this handler calls; the source graph uses it for static edges.
+  calls?: string[];
+  symbolText?: string;
+  fileText?: string;
 }
 
 export interface MappingEntryValidationError {
@@ -95,6 +103,17 @@ export function parseSourceMappingEntry(raw: unknown, index: number): ParseMappi
   if (r.snippet !== undefined && typeof r.snippet !== "string") {
     return fail("'snippet' must be a string when present");
   }
+  if (r.calls !== undefined) {
+    if (!Array.isArray(r.calls) || r.calls.some((c) => typeof c !== "string" || c.length === 0)) {
+      return fail("'calls' must be an array of non-empty strings when present");
+    }
+  }
+  if (r.symbolText !== undefined && typeof r.symbolText !== "string") {
+    return fail("'symbolText' must be a string when present");
+  }
+  if (r.fileText !== undefined && typeof r.fileText !== "string") {
+    return fail("'fileText' must be a string when present");
+  }
 
   const entry: SourceMappingEntry = {
     capabilityId: r.capabilityId,
@@ -105,7 +124,22 @@ export function parseSourceMappingEntry(raw: unknown, index: number): ParseMappi
     lineEnd: r.lineEnd,
   };
   if (typeof r.snippet === "string") entry.snippet = r.snippet;
+  if (Array.isArray(r.calls)) entry.calls = r.calls as string[];
+  if (typeof r.symbolText === "string") entry.symbolText = r.symbolText;
+  if (typeof r.fileText === "string") entry.fileText = r.fileText;
   return { ok: true, entry };
+}
+
+/** Deterministic key for a source symbol, used for graph node ids + code viewer routing. */
+export function symbolKey(filePath: string, handlerSymbol: string): string {
+  return `${filePath}#${handlerSymbol}`;
+}
+
+/** Inverse of symbolKey. Uses the LAST `#` so a filePath containing `#` still splits cleanly. */
+export function splitSymbolKey(key: string): [filePath: string, handlerSymbol: string] {
+  const idx = key.lastIndexOf("#");
+  if (idx < 0) return [key, ""];
+  return [key.slice(0, idx), key.slice(idx + 1)];
 }
 
 // ---------- Bounded snippet trimming ----------

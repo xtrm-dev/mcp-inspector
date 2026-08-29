@@ -1516,6 +1516,9 @@ export interface CapabilitySourceMapping {
   lineEnd: number;
   snippet: string | null;
   indexedAt: Iso;
+  calls: string[];
+  symbolText: string | null;
+  fileText: string | null;
 }
 
 export interface IndexMappingEntryInput {
@@ -1526,6 +1529,9 @@ export interface IndexMappingEntryInput {
   lineStart: number;
   lineEnd: number;
   snippet?: string;
+  calls?: string[];
+  symbolText?: string;
+  fileText?: string;
 }
 
 interface CapabilitySourceMappingRow {
@@ -1539,9 +1545,21 @@ interface CapabilitySourceMappingRow {
   line_end: number;
   snippet: string | null;
   indexed_at: string;
+  calls_json: string | null;
+  symbol_text: string | null;
+  file_text: string | null;
 }
 
 function rowToCapabilitySourceMapping(row: CapabilitySourceMappingRow): CapabilitySourceMapping {
+  let calls: string[] = [];
+  if (row.calls_json) {
+    try {
+      const parsed = JSON.parse(row.calls_json);
+      if (Array.isArray(parsed)) calls = parsed.filter((c): c is string => typeof c === "string");
+    } catch {
+      calls = [];
+    }
+  }
   return {
     id: row.id,
     revisionId: row.revision_id,
@@ -1553,6 +1571,9 @@ function rowToCapabilitySourceMapping(row: CapabilitySourceMappingRow): Capabili
     lineEnd: row.line_end,
     snippet: row.snippet,
     indexedAt: row.indexed_at,
+    calls,
+    symbolText: row.symbol_text,
+    fileText: row.file_text,
   };
 }
 
@@ -1567,14 +1588,18 @@ export interface SourceMappingRepository {
    * guessing which revision actually served the call.
    */
   findLatestForCapability(capabilityId: string): CapabilitySourceMapping | null;
+  /** All mappings for one revision — source of nodes + static edges for the graph view. */
+  listForRevision(revisionId: string): CapabilitySourceMapping[];
 }
 
 export function createSourceMappingRepository(db: SqliteDb): SourceMappingRepository {
   const upsert = db.prepare(`
     INSERT INTO capability_source_mapping
-      (id, revision_id, capability_id, kind, handler_symbol, file_path, line_start, line_end, snippet, indexed_at)
+      (id, revision_id, capability_id, kind, handler_symbol, file_path, line_start, line_end,
+       snippet, indexed_at, calls_json, symbol_text, file_text)
     VALUES
-      (@id, @revision_id, @capability_id, @kind, @handler_symbol, @file_path, @line_start, @line_end, @snippet, @indexed_at)
+      (@id, @revision_id, @capability_id, @kind, @handler_symbol, @file_path, @line_start, @line_end,
+       @snippet, @indexed_at, @calls_json, @symbol_text, @file_text)
     ON CONFLICT(revision_id, capability_id) DO UPDATE SET
       kind           = excluded.kind,
       handler_symbol = excluded.handler_symbol,
@@ -1582,13 +1607,19 @@ export function createSourceMappingRepository(db: SqliteDb): SourceMappingReposi
       line_start     = excluded.line_start,
       line_end       = excluded.line_end,
       snippet        = excluded.snippet,
-      indexed_at     = excluded.indexed_at
+      indexed_at     = excluded.indexed_at,
+      calls_json     = excluded.calls_json,
+      symbol_text    = excluded.symbol_text,
+      file_text      = excluded.file_text
   `);
   const getStmt = db.prepare(
     "SELECT * FROM capability_source_mapping WHERE revision_id = ? AND capability_id = ?",
   );
   const latestForCapabilityStmt = db.prepare(
     "SELECT * FROM capability_source_mapping WHERE capability_id = ? ORDER BY indexed_at DESC LIMIT 1",
+  );
+  const listForRevisionStmt = db.prepare(
+    "SELECT * FROM capability_source_mapping WHERE revision_id = ? ORDER BY file_path, handler_symbol",
   );
 
   return {
@@ -1607,6 +1638,9 @@ export function createSourceMappingRepository(db: SqliteDb): SourceMappingReposi
             line_end: entry.lineEnd,
             snippet: entry.snippet ?? null,
             indexed_at: indexedAt,
+            calls_json: entry.calls ? JSON.stringify(entry.calls) : null,
+            symbol_text: entry.symbolText ?? null,
+            file_text: entry.fileText ?? null,
           });
         }
       });
@@ -1626,6 +1660,10 @@ export function createSourceMappingRepository(db: SqliteDb): SourceMappingReposi
         | CapabilitySourceMappingRow
         | undefined;
       return row ? rowToCapabilitySourceMapping(row) : null;
+    },
+    listForRevision(revisionId) {
+      const rows = listForRevisionStmt.all(revisionId) as CapabilitySourceMappingRow[];
+      return rows.map(rowToCapabilitySourceMapping);
     },
   };
 }

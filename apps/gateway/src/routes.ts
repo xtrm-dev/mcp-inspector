@@ -32,6 +32,8 @@ import {
 import { connect as netConnect, type Socket } from "node:net";
 import {
   parseSourceMappingEntry,
+  splitSymbolKey,
+  symbolKey as makeSymbolKey,
   trimSnippet,
   type SourceMappingEntry,
 } from "@mcp-inspector-x/source-intelligence";
@@ -1391,6 +1393,177 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
     }
     const snippet = mapping.snippet !== null ? trimSnippet(mapping.snippet, mapping.lineStart) : null;
     return c.json({ mapping, snippet });
+  });
+
+  // Stream E: source graph for a revision. Nodes are unique handler symbols
+  // from indexed mappings. Static edges are declared per mapping's `calls`
+  // list (symbol keys); runtime edges are executions whose capability_id
+  // matches an indexed mapping — proof the handler actually ran.
+  app.get("/api/v1/source/revisions/:id/graph", (c) => {
+    const revisionId = c.req.param("id");
+    const revision = deps.storage.sourceRevisions.get(revisionId);
+    if (!revision) return c.json({ error: `unknown source_revision '${revisionId}'` }, 404);
+
+    const mappings = deps.storage.sourceMappings.listForRevision(revisionId);
+    const nodesById = new Map<
+      string,
+      {
+        id: string;
+        handlerSymbol: string;
+        filePath: string;
+        capabilityIds: string[];
+        kind: string;
+      }
+    >();
+    for (const m of mappings) {
+      const id = makeSymbolKey(m.filePath, m.handlerSymbol);
+      const existing = nodesById.get(id);
+      if (existing) {
+        existing.capabilityIds.push(m.capabilityId);
+      } else {
+        nodesById.set(id, {
+          id,
+          handlerSymbol: m.handlerSymbol,
+          filePath: m.filePath,
+          capabilityIds: [m.capabilityId],
+          kind: m.kind,
+        });
+      }
+    }
+
+    const staticEdges: Array<{ fromId: string; toId: string; relation: "calls" }> = [];
+    for (const m of mappings) {
+      const fromId = makeSymbolKey(m.filePath, m.handlerSymbol);
+      for (const toId of m.calls) {
+        // Only surface edges whose target is a known node — an orphan edge
+        // to an un-indexed symbol is not useful for the graph substrate.
+        if (nodesById.has(toId)) staticEdges.push({ fromId, toId, relation: "calls" });
+      }
+    }
+
+    const runtimeEdges: Array<{
+      symbolId: string;
+      executionId: string;
+      capabilityId: string;
+      serverId: string;
+      status: string;
+      startedAt: string;
+    }> = [];
+    // For each capability with a mapping, take the recent executions and
+    // treat each one as an observed runtime hit on that symbol.
+    for (const m of mappings) {
+      const symbolId = makeSymbolKey(m.filePath, m.handlerSymbol);
+      const executions = deps.storage.executions.listForCapability(m.capabilityId, { limit: 50 });
+      for (const ex of executions) {
+        runtimeEdges.push({
+          symbolId,
+          executionId: ex.id,
+          capabilityId: ex.capabilityId,
+          serverId: ex.serverId,
+          status: ex.status,
+          startedAt: ex.startedAt,
+        });
+      }
+    }
+
+    return c.json({
+      revision,
+      nodes: [...nodesById.values()],
+      staticEdges,
+      runtimeEdges,
+    });
+  });
+
+  // Stream E: bundled code viewer payload for one symbol at one revision.
+  // Serves the snippet / full symbol / full file / dependencies / dependents
+  // / runtime trace sub-views in one round trip so the panel does not fan
+  // out to five endpoints per selection.
+  app.get("/api/v1/source/revisions/:id/code", (c) => {
+    const revisionId = c.req.param("id");
+    const revision = deps.storage.sourceRevisions.get(revisionId);
+    if (!revision) return c.json({ error: `unknown source_revision '${revisionId}'` }, 404);
+
+    const filePath = c.req.query("filePath");
+    const handlerSymbol = c.req.query("handlerSymbol");
+    if (!filePath || !handlerSymbol) {
+      return c.json({ error: "'filePath' and 'handlerSymbol' query params required" }, 400);
+    }
+
+    const mappings = deps.storage.sourceMappings.listForRevision(revisionId);
+    const symbolId = makeSymbolKey(filePath, handlerSymbol);
+    const primary = mappings.find(
+      (m) => m.filePath === filePath && m.handlerSymbol === handlerSymbol,
+    );
+    if (!primary) {
+      return c.json({ error: `no mapping for symbol '${symbolId}' at revision '${revisionId}'` }, 404);
+    }
+
+    const snippet =
+      primary.snippet !== null ? trimSnippet(primary.snippet, primary.lineStart) : null;
+
+    const dependencies = primary.calls
+      .map((toId) => {
+        const [depFile, depSym] = splitSymbolKey(toId);
+        const m = mappings.find((x) => x.filePath === depFile && x.handlerSymbol === depSym);
+        return m
+          ? { symbolId: toId, filePath: m.filePath, handlerSymbol: m.handlerSymbol, kind: m.kind }
+          : null;
+      })
+      .filter((x): x is { symbolId: string; filePath: string; handlerSymbol: string; kind: string } => x !== null);
+
+    const dependents = mappings
+      .filter((m) => m.calls.includes(symbolId))
+      .map((m) => ({
+        symbolId: makeSymbolKey(m.filePath, m.handlerSymbol),
+        filePath: m.filePath,
+        handlerSymbol: m.handlerSymbol,
+        kind: m.kind,
+      }));
+
+    // Runtime trace: every execution of a capability that resolves to this
+    // symbol at this revision.
+    const capabilityIdsForSymbol = mappings
+      .filter((m) => m.filePath === filePath && m.handlerSymbol === handlerSymbol)
+      .map((m) => m.capabilityId);
+    const trace: Array<{
+      executionId: string;
+      capabilityId: string;
+      serverId: string;
+      status: string;
+      startedAt: string;
+      endedAt: string | null;
+    }> = [];
+    for (const capId of capabilityIdsForSymbol) {
+      for (const ex of deps.storage.executions.listForCapability(capId, { limit: 50 })) {
+        trace.push({
+          executionId: ex.id,
+          capabilityId: ex.capabilityId,
+          serverId: ex.serverId,
+          status: ex.status,
+          startedAt: ex.startedAt,
+          endedAt: ex.endedAt,
+        });
+      }
+    }
+    trace.sort((a, b) => a.startedAt.localeCompare(b.startedAt));
+
+    return c.json({
+      symbol: {
+        id: symbolId,
+        handlerSymbol: primary.handlerSymbol,
+        filePath: primary.filePath,
+        lineStart: primary.lineStart,
+        lineEnd: primary.lineEnd,
+        kind: primary.kind,
+        capabilityId: primary.capabilityId,
+      },
+      snippet,
+      symbolText: primary.symbolText,
+      fileText: primary.fileText,
+      dependencies,
+      dependents,
+      trace,
+    });
   });
 
   app.post("/api/v1/traces", async (c) => {

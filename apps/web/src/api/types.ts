@@ -330,3 +330,76 @@ export interface RegisterSourceRevisionInput {
   shortSha?: string;
   metadata?: JsonValue;
 }
+
+// ---- Source graph + code viewer (Stream E) ----
+
+export interface SourceGraphNode {
+  id: string;
+  handlerSymbol: string;
+  filePath: string;
+  capabilityIds: string[];
+  kind: string;
+}
+
+export interface SourceGraphStaticEdge {
+  fromId: string;
+  toId: string;
+  relation: "calls";
+}
+
+export interface SourceGraphRuntimeEdge {
+  symbolId: string;
+  executionId: string;
+  capabilityId: string;
+  serverId: string;
+  status: string;
+  startedAt: string;
+}
+
+export interface SourceGraphResponse {
+  revision: SourceRevision;
+  nodes: SourceGraphNode[];
+  staticEdges: SourceGraphStaticEdge[];
+  runtimeEdges: SourceGraphRuntimeEdge[];
+}
+
+export interface CodeViewerTrimmedSnippet {
+  text: string;
+  lineStart: number;
+  lineEnd: number;
+  truncated: boolean;
+}
+
+export interface CodeViewerSymbolRef {
+  symbolId: string;
+  filePath: string;
+  handlerSymbol: string;
+  kind: string;
+}
+
+export interface CodeViewerTraceEntry {
+  executionId: string;
+  capabilityId: string;
+  serverId: string;
+  status: string;
+  startedAt: string;
+  endedAt: string | null;
+}
+
+export interface SourceCodeResponse {
+  symbol: {
+    id: string;
+    handlerSymbol: string;
+    filePath: string;
+    lineStart: number;
+    lineEnd: number;
+    kind: string;
+    capabilityId: string;
+  };
+  snippet: CodeViewerTrimmedSnippet | null;
+  symbolText: string | null;
+  fileText: string | null;
+  dependencies: CodeViewerSymbolRef[];
+  dependents: CodeViewerSymbolRef[];
+  trace: CodeViewerTraceEntry[];
+}

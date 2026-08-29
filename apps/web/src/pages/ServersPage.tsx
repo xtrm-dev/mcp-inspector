@@ -268,9 +268,17 @@ export function ServersPage() {
           patch.credentialRefId = null;
         }
       } else if (form.authKind === "none") {
-        // Explicit removal: null the binding that exists.
-        if (originalKind === "bearer") patch.credentialRefId = null;
-        else if (originalKind === "header") patch.headerCredentials = null;
+        // Explicit removal: when any binding exists (bearer, header, or rows
+        // created outside this UI via raw API/import with both), drop ALL of
+        // them — unconditional double-null is strictly safer than deriving
+        // one kind. Nothing to remove ⇒ no credential keys in the PATCH.
+        if (
+          original?.credentialRefId != null ||
+          (original?.headerCredentials && Object.keys(original.headerCredentials).length > 0)
+        ) {
+          patch.credentialRefId = null;
+          patch.headerCredentials = null;
+        }
       } else if (form.authKind !== originalKind) {
         // Picked a different kind but entered no value → reject instead of
         // silently keeping the old binding under a mismatched select.

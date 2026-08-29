@@ -277,8 +277,15 @@ describe("Server edit mode", () => {
     expect(patch.credentialRefId).toBeNull();
   });
 
-  it("choosing Auth=None in edit mode removes the held binding (credentialRefId → null)", async () => {
-    serverDetail = { ...baseDetail(), credentialRefId: "cred-old" };
+  it("choosing Auth=None in edit mode removes BOTH held bindings (mixed-state row safe)", async () => {
+    // Mixed-state row (bearer + header) can only come from raw API/import;
+    // removal must null both so no stale credential survives an explicit
+    // "None" intent. FAILS pre-fix: only credentialRefId was nulled.
+    serverDetail = {
+      ...baseDetail(),
+      credentialRefId: "cred-old",
+      headerCredentials: { "X-API-Key": "cred-old-header" },
+    };
     await act(async () => root.render(<ServersPage />));
     await flush();
 
@@ -290,7 +297,9 @@ describe("Server edit mode", () => {
     await flush();
     await flush();
 
-    expect(patchBody().credentialRefId).toBeNull(); // FAILS pre-fix: no PATCH at all
+    const patch = patchBody();
+    expect(patch.credentialRefId).toBeNull();
+    expect(patch.headerCredentials).toBeNull();
   });
 
   it("switching auth kind without entering a value surfaces a validation error, not a silent no-op", async () => {

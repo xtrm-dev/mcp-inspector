@@ -66,8 +66,8 @@ async function main(): Promise<void> {
   storage.events.append({ kind: "gateway.boot", payload: { pid: process.pid } });
 
   const demo: DemoMcp = await startDemoMcp();
-  const adapter = createSdkAdapter();
   const secrets = createSecretsRegistry({ storage });
+  const adapter = createSdkAdapter({ redact: (s) => secrets.scrub(s) });
   const runnerClient = await maybeConnectRunner();
   const serverManager = createServerManager(
     runnerClient

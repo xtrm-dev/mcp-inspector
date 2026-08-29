@@ -1,4 +1,5 @@
 import type { OAuthClientProvider } from "@modelcontextprotocol/client";
+import type { WireCapture } from "./wire-recorder";
 
 export const MODERN_PROTOCOL_VERSION = "2026-07-28" as const;
 
@@ -136,7 +137,7 @@ export interface McpClientAdapter {
     name: string;
     arguments: JsonObject;
     signal?: AbortSignal;
-  }): Promise<{ value: JsonValue; evidence: ProtocolEvidence }>;
+  }): Promise<{ value: JsonValue; evidence: ProtocolEvidence; rawWire?: WireCapture }>;
   /**
    * Resume an `input_required` MRTR round: re-invokes the same tool with
    * the caller's `inputResponses` plus a byte-exact echo of the opaque
@@ -149,7 +150,7 @@ export interface McpClientAdapter {
     requestState: string;
     inputResponses: Record<string, JsonValue>;
     signal?: AbortSignal;
-  }): Promise<{ value: JsonValue; evidence: ProtocolEvidence }>;
+  }): Promise<{ value: JsonValue; evidence: ProtocolEvidence; rawWire?: WireCapture }>;
   listResources(serverId: string): Promise<McpResourceDefinition[]>;
   listResourceTemplates(serverId: string): Promise<McpResourceTemplateDefinition[]>;
   readResource(input: { serverId: string; uri: string }): Promise<{
@@ -236,7 +237,16 @@ export const TASKS_EXTENSION_KEY = "io.modelcontextprotocol/tasks" as const;
  */
 export const HISTORICAL_TASK_METHODS = ["tasks/list", "tasks/result"] as const;
 
-export { createSdkAdapter } from "./sdk-adapter";
+export { createSdkAdapter, type CreateSdkAdapterOptions } from "./sdk-adapter";
+export {
+  createWireRecorder,
+  type WireCapture,
+  type WireRecorder,
+  type WireRecorderOptions,
+  type WireRequestCapture,
+  type WireResponseCapture,
+  type WireStreamMark,
+} from "./wire-recorder";
 export {
   createOAuthClientProvider,
   runOAuthFlow,

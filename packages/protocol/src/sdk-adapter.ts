@@ -21,6 +21,7 @@ import {
   type ProtocolEvidence,
   type ProtocolNegotiation,
 } from "./index";
+import { createWireRecorder, type WireRecorder } from "./wire-recorder";
 
 interface Session {
   client: Client;
@@ -29,6 +30,27 @@ interface Session {
   // without going through Client (which rejects `tasks/get` and
   // `tasks/cancel` at the negotiated-version gate — SDK #2598).
   descriptor: McpServerDescriptor;
+  /**
+   * Present only for `streamable-http` sessions — the recorder that wraps
+   * the transport's fetch. `callTool` / `continueCall` drain it after each
+   * dispatch so the caller can persist `raw_request` / `raw_response`
+   * artifacts. Absent for stdio (that path is captured by stdio-proxy).
+   */
+  recorder?: WireRecorder;
+}
+
+export interface CreateSdkAdapterOptions {
+  /**
+   * Runs against every persisted HTTP header value + against text-shaped
+   * request bodies before the wire is handed back to the gateway. Wire the
+   * gateway's `SecretsRegistry.scrub` here so bearer tokens, custom-header
+   * secrets, and OAuth tokens the registry has ever seen are replaced with
+   * `[REDACTED]` before they can be persisted to an artifact.
+   *
+   * `Authorization`, `Cookie`, `Proxy-Authorization`, and `Set-Cookie` are
+   * ALWAYS replaced with `[REDACTED]` regardless of this callback.
+   */
+  redact?: (s: string) => string;
 }
 
 const CLIENT_INFO = { name: "mcp-inspector-x", version: "0.0.0" } as const;
@@ -45,8 +67,9 @@ const CLIENT_INFO = { name: "mcp-inspector-x", version: "0.0.0" } as const;
  * resources/prompts, auth pass-through are deferred to later slices — extend the
  * McpClientAdapter interface (and bump protocolAdapterContractVersion) when they land.
  */
-export function createSdkAdapter(): McpClientAdapter {
+export function createSdkAdapter(options: CreateSdkAdapterOptions = {}): McpClientAdapter {
   const sessions = new Map<string, Session>();
+  const redact = options.redact;
 
   const adapter: McpClientAdapter = {
     async connect(descriptor: McpServerDescriptor): Promise<ProtocolNegotiation> {
@@ -62,6 +85,7 @@ export function createSdkAdapter(): McpClientAdapter {
       }
 
       let transport: Transport;
+      let recorder: WireRecorder | undefined;
       if (descriptor.transport === "streamable-http") {
         if (!descriptor.url) {
           throw new Error(
@@ -83,6 +107,8 @@ export function createSdkAdapter(): McpClientAdapter {
           // Bearer that a different server might use.
           transportOpts.requestInit = { headers: { ...descriptor.customHeaders } };
         }
+        recorder = createWireRecorder(redact ? { redact } : {});
+        transportOpts.fetch = recorder.fetch;
         transport = new StreamableHTTPClientTransport(new URL(descriptor.url), transportOpts);
       } else {
         // stdio: the child was already spawned by the privileged runner
@@ -129,7 +155,12 @@ export function createSdkAdapter(): McpClientAdapter {
         throw err;
       }
 
-      sessions.set(descriptor.id, { client, transport, descriptor });
+      const session: Session = { client, transport, descriptor };
+      if (recorder) session.recorder = recorder;
+      // Discard the connect handshake's wire; only tools/call rounds are
+      // surfaced as raw_request / raw_response artifacts to callers.
+      recorder?.drain();
+      sessions.set(descriptor.id, session);
 
       const era = client.getProtocolEra() as ProtocolEra | undefined;
       const version = client.getNegotiatedProtocolVersion();
@@ -156,11 +187,14 @@ export function createSdkAdapter(): McpClientAdapter {
         allowInputRequired: true,
       };
       if (input.signal) callOpts.signal = input.signal;
+      s.recorder?.drain();
       const result = await s.client.callTool(
         { name: input.name, arguments: input.arguments as Record<string, unknown> },
         callOpts,
       );
-      return mapCallToolResult(s.client, result);
+      const mapped = mapCallToolResult(s.client, result);
+      const rawWire = s.recorder?.drain();
+      return rawWire ? { ...mapped, rawWire } : mapped;
     },
 
     async continueCall(input) {
@@ -172,6 +206,7 @@ export function createSdkAdapter(): McpClientAdapter {
         allowInputRequired: true,
       };
       if (input.signal) requestOpts.signal = input.signal;
+      s.recorder?.drain();
       const result = await (s.client as unknown as {
         request: (
           r: { method: string; params: Record<string, unknown> },
@@ -189,7 +224,9 @@ export function createSdkAdapter(): McpClientAdapter {
         },
         requestOpts,
       );
-      return mapCallToolResult(s.client, result);
+      const mapped = mapCallToolResult(s.client, result);
+      const rawWire = s.recorder?.drain();
+      return rawWire ? { ...mapped, rawWire } : mapped;
     },
 
     async listResources(serverId: string): Promise<McpResourceDefinition[]> {

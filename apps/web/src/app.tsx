@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type PointerEvent } from "react";
 import {
   AgentRunsPage,
   CapabilitiesPage,
@@ -43,6 +43,8 @@ import {
   WorkspaceGraph,
   readWorkspaceLayout,
   serializeWorkspaceLayout,
+  clampDetailPaneWidth,
+  DETAIL_PANE_DEFAULT_WIDTH,
   type GraphLayout,
   type WorkspaceLayoutState,
   type WorkspaceProjection,
@@ -452,7 +454,10 @@ export function App() {
       </aside>
 
       {showWorkspace ? (
-        <div className="shell-main">
+        <div
+          className="shell-main"
+          style={{ ["--detail-pane-width" as string]: `${workspaceLayout.detailPaneWidth ?? DETAIL_PANE_DEFAULT_WIDTH}px` } as CSSProperties}
+        >
           <WorkspaceCanvas
             workspace={activeWorkspace}
             nodes={nodes}
@@ -498,6 +503,8 @@ export function App() {
             onSelectNode={setSelectedNodeId}
             onToggleSelected={toggleSelectedNode}
             onPresentationChange={(node, presentation) => void changePresentation(node, presentation)}
+            width={workspaceLayout.detailPaneWidth ?? DETAIL_PANE_DEFAULT_WIDTH}
+            onResize={(width) => commitWorkspaceLayout((current) => ({ ...current, detailPaneWidth: clampDetailPaneWidth(width) }))}
           />
         </div>
       ) : (
@@ -712,9 +719,55 @@ function WorkspaceCanvas({
   );
 }
 
-function WorkspaceDetailPane({ node, ...props }: { node: WorkspaceNodeRow | null } & Omit<NodeProjectionProps, "node">) {
+function WorkspaceDetailPane({
+  node,
+  width,
+  onResize,
+  ...props
+}: {
+  node: WorkspaceNodeRow | null;
+  width: number;
+  onResize: (width: number) => void;
+} & Omit<NodeProjectionProps, "node">) {
+  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  function handlePointerDown(event: PointerEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    dragRef.current = { startX: event.clientX, startWidth: width };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+  function handlePointerMove(event: PointerEvent<HTMLButtonElement>) {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const next = clampDetailPaneWidth(drag.startWidth - (event.clientX - drag.startX));
+    onResize(next);
+  }
+  function handlePointerUp(event: PointerEvent<HTMLButtonElement>) {
+    if (!dragRef.current) return;
+    dragRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+  }
+  function handleKeyDown(event: KeyboardEvent<HTMLButtonElement>) {
+    if (event.key === "ArrowLeft") { event.preventDefault(); onResize(clampDetailPaneWidth(width + 16)); }
+    else if (event.key === "ArrowRight") { event.preventDefault(); onResize(clampDetailPaneWidth(width - 16)); }
+  }
+
   return (
     <aside className="detail-pane" data-testid="workspace-detail-pane">
+      <button
+        type="button"
+        className="detail-pane-handle"
+        data-testid="workspace-detail-pane-handle"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize detail pane"
+        aria-valuenow={width}
+        onPointerDown={handlePointerDown}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerUp}
+        onKeyDown={handleKeyDown}
+      />
       <div className="detail-head">
         <span className="muted">{node ? "Selected capability" : "Workspace details"}</span>
         <h2>{node?.capabilityId ? (parseCapabilityId(node.capabilityId)?.name ?? node.capabilityId) : (node ? "Unbound node" : "Nothing selected")}</h2>

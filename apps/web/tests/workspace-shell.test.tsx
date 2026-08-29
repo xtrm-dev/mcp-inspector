@@ -101,4 +101,46 @@ describe("workspace-first shell", () => {
 
     expect(container.textContent).toContain("second-tool");
   });
+
+  it("exposes a resizable detail-pane handle whose width persists to layoutJson", async () => {
+    await act(async () => root.render(<App />));
+    await flush();
+
+    const handle = container.querySelector<HTMLElement>('[data-testid="workspace-detail-pane-handle"]');
+    expect(handle).not.toBeNull();
+    const shell = container.querySelector<HTMLElement>(".shell-main");
+    expect(shell).not.toBeNull();
+    expect(shell!.style.getPropertyValue("--detail-pane-width")).toBe("390px");
+
+    // jsdom lacks PointerEvent — synth MouseEvent with pointer type per source-page.test.tsx.
+    // pointer-capture is a no-op in jsdom; stub it so the handlers don't throw.
+    (handle as unknown as { setPointerCapture: (id: number) => void }).setPointerCapture = () => {};
+    (handle as unknown as { releasePointerCapture: (id: number) => void }).releasePointerCapture = () => {};
+    (handle as unknown as { hasPointerCapture: (id: number) => boolean }).hasPointerCapture = () => true;
+
+    await act(async () => {
+      handle!.dispatchEvent(Object.assign(new MouseEvent("pointerdown", { bubbles: true, clientX: 1000, button: 0 }), { pointerId: 1 }));
+    });
+    await act(async () => {
+      handle!.dispatchEvent(Object.assign(new MouseEvent("pointermove", { bubbles: true, clientX: 880 }), { pointerId: 1 }));
+    });
+    await act(async () => {
+      handle!.dispatchEvent(Object.assign(new MouseEvent("pointerup", { bubbles: true, clientX: 880 }), { pointerId: 1 }));
+    });
+    await flush();
+    await flush();
+
+    expect(shell!.style.getPropertyValue("--detail-pane-width")).toBe("510px");
+    const persisted = storage.workspaces.get("ws-durable")!.layoutJson;
+    expect(persisted).toContain("detailPaneWidth");
+    expect(JSON.parse(persisted).detailPaneWidth).toBe(510);
+
+    // Keyboard nudge: ArrowLeft widens by 16 (the pane is on the right edge).
+    await act(async () => {
+      handle!.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "ArrowLeft" }));
+    });
+    await flush();
+    await flush();
+    expect(JSON.parse(storage.workspaces.get("ws-durable")!.layoutJson).detailPaneWidth).toBe(526);
+  });
 });

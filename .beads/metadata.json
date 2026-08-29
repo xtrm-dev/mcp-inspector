@@ -1,7 +1,7 @@
 {
   "database": "dolt",
   "backend": "dolt",
-  "dolt_mode": "embedded",
-  "dolt_database": "mcp_inspector",
-  "project_id": "6f1b540a-f0db-4d9a-8812-d144167fb168"
+  "dolt_mode": "proxied-server",
+  "dolt_database": "mix",
+  "project_id": "87db4c88-0ac0-4d46-aeb2-8a59b83b82c1"
 }

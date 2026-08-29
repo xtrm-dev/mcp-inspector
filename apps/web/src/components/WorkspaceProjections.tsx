@@ -171,7 +171,7 @@ function PresentationActions(props: NodeProjectionProps & { compact?: boolean })
       {props.node.presentation === "collapsed" ? (
         <button onClick={setPresentation("expanded")}>Expand</button>
       ) : (
-        <button onClick={setPresentation("collapsed")}>Collapse</button>
+        <button data-testid={`collapse-${props.node.id}`} onClick={setPresentation("collapsed")}>Collapse</button>
       )}
       {props.node.presentation !== "focus" && (
         <button data-testid={`focus-${props.node.id}`} onClick={setPresentation("focus")}>Focus</button>

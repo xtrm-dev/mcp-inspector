@@ -428,6 +428,21 @@ export function App() {
 
   const showWorkspace = view === "workspace";
 
+  // Escape is the keyboard route out of the focus overlay and expanded cards:
+  // collapse the focused node, else the selected expanded node, else the first expanded node.
+  useEffect(() => {
+    if (!showWorkspace) return;
+    function handleKeyDown(event: globalThis.KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      const target = nodes.find((node) => node.presentation === "focus")
+        ?? nodes.find((node) => node.id === selectedNodeId && node.presentation !== "collapsed")
+        ?? nodes.find((node) => node.presentation !== "collapsed");
+      if (target) void changePresentation(target, "collapsed");
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [showWorkspace, nodes, selectedNodeId]);
+
   return (
     <div className="app-shell">
       <header className="topbar">

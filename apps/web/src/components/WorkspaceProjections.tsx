@@ -107,6 +107,17 @@ function CapabilityCard(props: NodeProjectionProps & { forceExpanded?: boolean }
           <span>{summary.serverName} · {summary.type}</span>
         </button>
         <span className={`status ${summary.statusClass}`}>{summary.status}</span>
+        {props.node.presentation !== "collapsed" && (
+          <button
+            className="collapse-card"
+            data-testid={`collapse-${props.node.id}`}
+            aria-label={`Collapse ${getCapabilityName(props.node)}`}
+            title="Collapse card"
+            onClick={(event) => { event.stopPropagation(); props.onPresentationChange(props.node, "collapsed"); }}
+          >
+            Collapse
+          </button>
+        )}
       </header>
       <div className="capability-summary">
         <Metric label="Duration" value={summary.duration} />
@@ -240,12 +251,12 @@ function PresentationActions(props: NodeProjectionProps & { compact?: boolean; r
       {collapsed ? (
         <button onClick={setPresentation("expanded")}>Expand</button>
       ) : (
-        <button data-testid={`collapse-${props.node.id}`} onClick={setPresentation("collapsed")}>Collapse</button>
+        <button data-testid={`collapse-strip-${props.node.id}`} onClick={setPresentation("collapsed")}>Collapse</button>
       )}
       {props.node.presentation !== "focus" && (
         <button data-testid={`focus-${props.node.id}`} onClick={setPresentation("focus")}>Focus</button>
       )}
-      {props.node.presentation === "focus" && <button onClick={setPresentation("expanded")}>Exit focus</button>}
+      {props.node.presentation === "focus" && <button onClick={setPresentation("collapsed")}>Exit focus</button>}
     </div>
   );
 }

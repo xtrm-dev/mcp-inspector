@@ -38,4 +38,8 @@ repos:
         stages: [pre-push]
         language: system
         pass_filenames: false
-        entry: bash -c 'if command -v osv-scanner >/dev/null; then osv-scanner --recursive ./; else echo "osv-scanner not installed locally — skipping (CI covers it)"; fi'
+        # `--recursive ./` fails with exit 127 in linked git worktrees
+        # (`.git` is a gitfile, not a directory, so the tool cannot parse
+        # `.git/info/exclude`). Point it at the lockfile explicitly —
+        # same coverage, worktree-safe. CI still runs the full workflow.
+        entry: bash -c 'if command -v osv-scanner >/dev/null; then osv-scanner --lockfile=package-lock.json; else echo "osv-scanner not installed locally — skipping (CI covers it)"; fi'

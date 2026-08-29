@@ -122,9 +122,10 @@ function tryRouteTasksMethod(
   headers: IncomingMessage["headers"],
   res: ServerResponse,
 ): boolean {
-  let msg: { method?: unknown; id?: unknown; params?: unknown } | null = null;
+  type ParsedMsg = { method?: unknown; id?: unknown; params?: unknown };
+  let msg: ParsedMsg | null = null;
   try {
-    msg = JSON.parse(body) as typeof msg;
+    msg = JSON.parse(body) as ParsedMsg;
   } catch {
     return false;
   }

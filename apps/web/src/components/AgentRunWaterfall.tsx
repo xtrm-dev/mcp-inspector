@@ -34,7 +34,7 @@ function toMs(iso: string | null | undefined): number | null {
 function makeRows(execs: ExecutionRecord[]): WaterfallRow[] {
   const rows: WaterfallRow[] = [];
   for (const ex of execs) {
-    const start = toMs(ex.startedAt) ?? toMs(ex.createdAt);
+    const start = toMs(ex.startedAt);
     if (start === null) continue;
     const end = toMs(ex.endedAt);
     rows.push({

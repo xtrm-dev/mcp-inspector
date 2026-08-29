@@ -151,6 +151,7 @@ const SCENARIOS = [
         `expected a taskId in the initial value, got ${JSON.stringify(initial.value)}`);
 
       let terminal = null;
+      let nextDelayMs = 150;
       for (let i = 0; i < 8; i += 1) {
         const poll = await ctx.post(`/api/v1/executions/${initial.executionId}/rounds`, {
           taskAction: "poll",
@@ -163,7 +164,13 @@ const SCENARIOS = [
         }
         ctx.assert(poll.status === "task_working",
           `unexpected intermediate status ${poll.status}: ${JSON.stringify(poll)}`);
-        await sleep(150);
+        // R1.3: honor the server-advertised pollIntervalMs the gateway
+        // surfaced from tasks/get; clamped to a safe [50, 5000] window.
+        const advertised = poll?.evidence?.extensions?.pollIntervalMs;
+        nextDelayMs = typeof advertised === "number"
+          ? Math.min(5000, Math.max(50, advertised))
+          : 150;
+        await sleep(nextDelayMs);
       }
       ctx.assert(terminal && terminal.status === "complete",
         `task did not reach complete within budget: ${JSON.stringify(terminal)}`);

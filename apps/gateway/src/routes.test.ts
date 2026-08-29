@@ -198,6 +198,7 @@ describe("gateway HTTP routes (wired to the SDK adapter + demo MCP)", () => {
     expect(tools.tools.map((t) => t.name).sort()).toEqual([
       "add_numbers",
       "interactive_greet",
+      "interactive_task",
       "long_running_task",
       "slow_echo",
     ]);

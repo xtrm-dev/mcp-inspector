@@ -150,14 +150,14 @@ describe("Tasks lifecycle persistence (long_running_task)", () => {
     expect(rounds[1]?.kind).toBe("task_update");
   });
 
-  it("resume shape is state-checked: a task_working execution rejects inputResponses, and an input_required execution rejects taskAction", async () => {
+  it("resume shape is state-checked: a task_working execution rejects an empty body, and an input_required (MRTR) execution rejects taskAction", async () => {
     const { executionId: taskExecId } = await startTask();
-    const wrongForTask = await app.request(`/api/v1/executions/${taskExecId}/rounds`, {
+    const emptyForTask = await app.request(`/api/v1/executions/${taskExecId}/rounds`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ inputResponses: { name: "world" } }),
+      body: JSON.stringify({}),
     });
-    expect(wrongForTask.status).toBe(400);
+    expect(emptyForTask.status).toBe(400);
 
     const greet = (await (
       await app.request("/api/v1/servers/demo/tools/interactive_greet/call", {
@@ -176,17 +176,103 @@ describe("Tasks lifecycle persistence (long_running_task)", () => {
     expect(wrongForMrtr.status).toBe(400);
   });
 
+  // R1.3 (issue #60): full extension-shape lifecycle. The initial call
+  // returns a task envelope (`resultType: "task"` on evidence, taskId on the
+  // response value); a poll transitions the task to `input_required` with
+  // `inputRequests` exposed; `tasks/update` inputResponses unblocks the task
+  // back to `working`; a final poll completes it.
+  it("interactive lifecycle: tools/call → tasks/get input_required → tasks/update inputResponses → tasks/get completed", async () => {
+    const startRes = await app.request(
+      "/api/v1/servers/demo/tools/interactive_task/call",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ arguments: {} }),
+      },
+    );
+    expect(startRes.status).toBe(200);
+    const start = (await startRes.json()) as {
+      executionId: string;
+      status: string;
+      value: { taskId?: string; status?: string };
+      evidence: { resultType?: string; extensions?: Record<string, unknown> };
+    };
+    expect(start.status).toBe("task_working");
+    expect(start.value.status).toBe("working");
+    expect(start.evidence.resultType).toBe("task");
+    expect(typeof start.value.taskId).toBe("string");
+    expect((start.evidence.extensions as Record<string, unknown>)?.["taskId"]).toBe(
+      start.value.taskId,
+    );
+
+    const executionId = start.executionId;
+
+    const pollA = await app.request(`/api/v1/executions/${executionId}/rounds`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taskAction: "poll" }),
+    });
+    expect(pollA.status).toBe(200);
+    const pollABody = (await pollA.json()) as {
+      status: string;
+      value: { status?: string };
+      evidence: { extensions?: Record<string, unknown> };
+      inputRequests: Record<string, unknown> | null;
+    };
+    expect(pollABody.status).toBe("task_working");
+    expect(pollABody.value.status).toBe("input_required");
+    expect(pollABody.inputRequests).toBeTruthy();
+    expect(pollABody.inputRequests?.["name"]).toBeDefined();
+
+    const update = await app.request(`/api/v1/executions/${executionId}/rounds`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ inputResponses: { name: "world" } }),
+    });
+    expect(update.status).toBe(200);
+    const updateBody = (await update.json()) as {
+      status: string;
+      value: { status?: string };
+    };
+    expect(updateBody.status).toBe("task_working");
+    expect(updateBody.value.status).toBe("working");
+
+    const pollB = await app.request(`/api/v1/executions/${executionId}/rounds`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ taskAction: "poll" }),
+    });
+    expect(pollB.status).toBe(200);
+    const pollBBody = (await pollB.json()) as {
+      status: string;
+      value: { status?: string; result?: number };
+    };
+    expect(pollBBody.status).toBe("complete");
+    expect(pollBBody.value.status).toBe("completed");
+    expect(pollBBody.value.result).toBe(42);
+
+    const record = storage.executions.get(executionId);
+    expect(record?.status).toBe("complete");
+    const persisted = storage.rounds.listForExecution(executionId);
+    expect(persisted.map((r) => r.kind)).toEqual([
+      "initial",
+      "task_update",
+      "task_update",
+      "task_update",
+    ]);
+  });
+
   // R1 slice 2: strict-server wire assertion. Verifies that the seam
   // actually spoke the Tasks-extension methods against the server, and
   // that the historical methods forbidden by the extension were never
   // emitted under any code path exercised above.
-  it("strict-server: only tasks/get and tasks/cancel reached the wire; tasks/list and tasks/result never did", () => {
+  it("strict-server: tasks/get + tasks/cancel + tasks/update reached the wire; tasks/list and tasks/result never did", () => {
     const received = getTaskMethodsReceived();
     const methods = received.map((r) => r.method);
-    // At minimum, the two poll+complete flow and the cancel flow contributed
-    // one tasks/get and one tasks/cancel.
+    // The flows above contributed at least one of each modern verb.
     expect(methods).toContain("tasks/get");
     expect(methods).toContain("tasks/cancel");
+    expect(methods).toContain("tasks/update");
     // Every received Task method carried a taskId param.
     for (const r of received) {
       expect(typeof r.taskId).toBe("string");

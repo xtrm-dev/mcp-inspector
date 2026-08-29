@@ -798,7 +798,7 @@ export function buildGatewayApp(deps: GatewayDeps): Hono {
         nextStatus = "input_required";
         endedAtIso = null;
         eventKind = "execution.input_required";
-      } else if (task?.status === "working") {
+      } else if (task?.status === "working" || task?.status === "input_required") {
         nextStatus = "task_working";
         endedAtIso = null;
         eventKind = "execution.task_update";
@@ -1986,7 +1986,10 @@ function recordRoundOutcome(
     status = "input_required";
     endedAtIso = null;
     eventKind = "execution.input_required";
-  } else if (task?.status === "working") {
+  } else if (task?.status === "working" || task?.status === "input_required") {
+    // Task-extension input_required is a sub-state of a running task —
+    // the execution stays task_working and the caller unblocks it with
+    // tasks/update inputResponses (not with continueCall / MRTR).
     status = "task_working";
     endedAtIso = null;
     eventKind = "execution.task_update";
@@ -2154,24 +2157,39 @@ async function appendRound(c: Context, deps: GatewayDeps): Promise<Response> {
   }
 
   if (execution.status === "task_working") {
-    if (!body.taskAction) {
-      return c.json({ error: `execution '${id}' is a running task; pass taskAction` }, 400);
+    if (!body.taskAction && !body.inputResponses) {
+      return c.json(
+        { error: `execution '${id}' is a running task; pass taskAction or inputResponses` },
+        400,
+      );
     }
     const taskId = recoverTaskId(lastRound.resultInlineJson);
     if (!taskId) {
       return c.json({ error: `execution '${id}' has no recoverable taskId` }, 400);
     }
-    // R1: real Tasks-extension wire. `tasks/cancel` for cancel; `tasks/get`
-    // for poll. Previously this branch re-invoked `tools/call` with
+    // R1: real Tasks-extension wire. Three actions across three verbs:
+    //   - taskAction:"cancel"   → tasks/cancel
+    //   - taskAction:"poll" (default) → tasks/get
+    //   - inputResponses         → tasks/update (unblocks a task-extension
+    //                              input_required sub-state)
+    // Previously this branch re-invoked `tools/call` with
     // `{ ...originalArgs, taskId, cancel }` — a domain-layer simulation
-    // that never spoke the extension wire and would never carry the
-    // required `Mcp-Name: <taskId>` header on Streamable HTTP.
+    // that never spoke the extension wire.
     const isCancel = body.taskAction === "cancel";
-    const argsForEvidence: Record<string, JsonValue> = { taskAction: body.taskAction, taskId };
+    const isUpdate = body.inputResponses !== undefined && !isCancel;
+    const argsForEvidence: Record<string, JsonValue> = { taskId };
+    if (body.taskAction) argsForEvidence["taskAction"] = body.taskAction;
+    if (isUpdate) argsForEvidence["inputResponses"] = body.inputResponses as JsonValue;
     try {
       const { value, evidence } = isCancel
         ? await deps.adapter.cancelTask({ serverId, taskId })
-        : await deps.adapter.getTask({ serverId, taskId });
+        : isUpdate
+          ? await deps.adapter.updateTask({
+              serverId,
+              taskId,
+              inputResponses: body.inputResponses as Record<string, JsonValue>,
+            })
+          : await deps.adapter.getTask({ serverId, taskId });
       const outcome = recordRoundOutcome(deps, {
         executionId: id,
         roundIndex,
@@ -2188,6 +2206,7 @@ async function appendRound(c: Context, deps: GatewayDeps): Promise<Response> {
         status: outcome.execution.status,
         value,
         evidence,
+        inputRequests: evidence.extensions?.["inputRequests"] ?? null,
         round: outcome.round,
       });
     } catch (err) {

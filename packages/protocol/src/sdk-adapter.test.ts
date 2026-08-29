@@ -1,6 +1,9 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createServer, type Server as HttpServer } from "node:http";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { z } from "zod";
 import {
   McpServer,
@@ -491,6 +494,56 @@ describe("createSdkAdapter (streamable-http, modern era)", () => {
     expect(caps?.extensions?.[TASKS_EXTENSION_KEY]).toBeDefined();
 
     await adapter.disconnect(descriptor.id);
+  }, 15_000);
+
+  // R2.2 (issue #61): byte-precise `server/discover` envelope. Serves as
+  // the acceptance contract for the modern-pinned negotiation surface —
+  // the gateway MUST produce these exact JSON bytes (field names, field
+  // order, primitive shapes) for a fixture-named 2026-07-28 server. If
+  // the SDK changes the envelope, regenerate the fixture deliberately.
+  it("R2.2: modern-pinned negotiation JSON matches the byte-precise fixture", async () => {
+    // A dedicated one-tool server so tools/list / capabilities shape stay
+    // stable across future edits to `buildTestMcp()`.
+    const fixtureMcp = new McpServer(
+      { name: "fixture-mcp", version: "0.0.1" },
+      { supportedProtocolVersions: [MODERN_PROTOCOL_VERSION] },
+    );
+    const fixtureHandler = createMcpHandler(() => fixtureMcp);
+    const fixtureNodeHandler = toNodeHandler(fixtureHandler);
+    const fixtureServer = createServer((req, res) =>
+      void fixtureNodeHandler(req as unknown as Parameters<typeof fixtureNodeHandler>[0], res),
+    );
+    await new Promise<void>((resolve, reject) => {
+      fixtureServer.once("error", reject);
+      fixtureServer.listen(0, "127.0.0.1", () => resolve());
+    });
+    const fixtureAddr = fixtureServer.address();
+    if (!fixtureAddr || typeof fixtureAddr === "string") throw new Error("no bound address");
+    const fixtureBase = `http://127.0.0.1:${fixtureAddr.port}/`;
+
+    const adapter = createSdkAdapter();
+    const descriptor: McpServerDescriptor = {
+      id: "fixture",
+      displayName: "Fixture",
+      transport: "streamable-http",
+      url: fixtureBase,
+      protocol: { policy: "modern" },
+    };
+
+    try {
+      const negotiation = await adapter.connect(descriptor);
+      const fixturePath = join(
+        dirname(fileURLToPath(import.meta.url)),
+        "__fixtures__",
+        "server-discover-modern-2026-07-28.json",
+      );
+      const expected = JSON.parse(readFileSync(fixturePath, "utf8")) as unknown;
+      expect(JSON.stringify(negotiation)).toBe(JSON.stringify(expected));
+      await adapter.disconnect(descriptor.id);
+    } finally {
+      await fixtureHandler.close();
+      await new Promise<void>((resolve) => fixtureServer.close(() => resolve()));
+    }
   }, 15_000);
 
   it("rejects a duplicate connect for the same serverId", async () => {

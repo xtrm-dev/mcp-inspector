@@ -1,0 +1,20 @@
+{
+  "policy": "modern",
+  "negotiatedEra": "modern",
+  "selectedVersion": "2026-07-28",
+  "discoverResult": {
+    "_meta": {
+      "io.modelcontextprotocol/serverInfo": {
+        "name": "fixture-mcp",
+        "version": "0.0.1"
+      }
+    },
+    "ttlMs": 0,
+    "cacheScope": "private",
+    "supportedVersions": [
+      "2026-07-28"
+    ],
+    "capabilities": {},
+    "resultType": "complete"
+  }
+}

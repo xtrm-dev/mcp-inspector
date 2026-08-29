@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { getServerCapabilities, listServers } from "../api/client";
 import type {
+  JsonSchema,
+  McpPromptArgumentDefinition,
   McpPromptDefinition,
   McpResourceDefinition,
   McpResourceTemplateDefinition,
@@ -8,6 +10,7 @@ import type {
   ServerSummary,
 } from "../api/types";
 import { AddToWorkspaceModal, type CapabilitySelection } from "../components/AddToWorkspaceModal";
+import { SchemaSummary } from "../schema-form";
 
 type CapabilityKind = "tool" | "resource" | "template" | "prompt";
 
@@ -19,6 +22,8 @@ interface CatalogEntry {
   name: string;
   description: string | null;
   capabilityId: string;
+  inputSchema?: JsonSchema | null;
+  arguments?: McpPromptArgumentDefinition[] | null;
 }
 
 const KIND_LABELS: Record<CapabilityKind, string> = {
@@ -37,6 +42,7 @@ function toolEntries(server: ServerSummary, tools: McpToolDefinition[]): Catalog
     name: t.name,
     description: t.description ?? null,
     capabilityId: `${server.id}::tool::${t.name}`,
+    inputSchema: t.inputSchema ?? null,
   }));
 }
 
@@ -73,6 +79,7 @@ function promptEntries(server: ServerSummary, prompts: McpPromptDefinition[]): C
     name: p.name,
     description: p.description ?? null,
     capabilityId: `${server.id}::prompt::${p.name}`,
+    arguments: p.arguments ?? null,
   }));
 }
 
@@ -251,12 +258,13 @@ export function CapabilitiesPage() {
             <th>Kind</th>
             <th>Name</th>
             <th>Description</th>
+            <th>Parameters</th>
           </tr>
         </thead>
         <tbody>
           {visible.length === 0 && !loading && (
             <tr>
-              <td colSpan={5} className="muted">
+              <td colSpan={6} className="muted">
                 No capabilities match the current filters.
               </td>
             </tr>
@@ -275,6 +283,13 @@ export function CapabilitiesPage() {
               <td>{KIND_LABELS[e.kind]}</td>
               <td>{e.name}</td>
               <td className="muted">{e.description ?? "—"}</td>
+              <td>
+                {e.kind === "tool" || e.kind === "prompt" ? (
+                  <SchemaSummary schema={e.inputSchema ?? undefined} arguments={e.arguments ?? undefined} />
+                ) : (
+                  <span className="muted">—</span>
+                )}
+              </td>
             </tr>
           ))}
         </tbody>

@@ -65,7 +65,7 @@ See [`conformance/evidence/`](../conformance/evidence/) for the dated JSON evide
 - **R1 — Tasks spec correction** (issue #60). CLEAN. Slice 1 (PR #66) added `getTask` / `updateTask` / `cancelTask` on `McpClientAdapter` and wired the gateway. Slice 2 (PR #68) made the wire real end-to-end via a raw-fetch seam that bypasses `Client.request` (SDK #2598 client-side rejection at the negotiated-version gate), with a strict-server assertion proving exact wire methods land and historical `tasks/list` / `tasks/result` are never emitted. Packaged smoke expansion for the real seam still to land.
 - **R2 — Modern negotiation hardening** (issue #61). CLEAN. Slice 1 (PR #70) regression guard: `policy: "auto"` against a modern-only server classifies modern (SDK #2722 protection). Slice 2 (PR #71) negative guard: `policy: "modern"` against a legacy-only server must not silently downgrade.
 - **P0 / P1 PRD-ADR wording** (issue #62). DONE. P0 (PR #67) sharpened `server/discover`, MRTR retry semantics, Tasks state machine, `pollIntervalMs` ownership, expanded conformance caveat. P1 (PR #72) sharpened CAP-07 + ADR-0003 §13.3 modern `subscriptions/listen` language.
-- **R9 — Conformance-client OAuth** (issue #63). PARTIAL. Slice 1 (PR #73) adds Bearer + custom-header credential surfaces so the harness exercises OAuth-required / API-key-gated scenarios through the same descriptor path production servers use. See the operator runbook below for exercising an OAuth-protected server without runtime code-flow. Slice 2 (dynamic OAuth code-flow via configurable OAuthClientProvider) and slice 3 (operator-in-the-loop E2E evidence) remain.
+- **R9 — Conformance-client OAuth** (issue #63). PARTIAL. Slice 1 (PR #73) adds Bearer + custom-header credential surfaces so the harness exercises OAuth-required / API-key-gated scenarios through the same descriptor path production servers use. See the operator runbook below for exercising an OAuth-protected server without runtime code-flow. Slice 2 (dynamic OAuth adapter — `DynamicOAuthProvider` in `apps/conformance-client/src/oauth-provider.ts`) IMPLEMENTED; requires the operator to mint a `refresh_token` once (browser code-flow, out of band) and set the `MCP_CONFORMANCE_OAUTH_*` env surface — every subsequent conformance run is unattended, with the provider exchanging refresh_token → access_token via the issuer's token endpoint, caching until near-expiry, and re-minting on demand. Slice 1's pre-minted `MCP_CONFORMANCE_BEARER_TOKEN` path is preserved as fallback (no regression). Slice 3 (operator-in-the-loop E2E evidence against a real MCP OAuth issuer, exercising the full PKCE consent flow through a real browser) remains — external-dependency-blocked pending a hosted MCP OAuth reference server.
 
 ### Canonical workspace-first UX reconstruction — R-UX (issue #64)
 
@@ -165,12 +165,40 @@ Preserve the following per run under `docs/evidence/YYYY-MM-DD-<issuer-slug>/`:
 Never commit the token itself. Redact any log line the harness might
 have written it to before storing evidence.
 
-### Slice 2 (pending, same issue #63)
+### Slice 2 (implemented; requires operator-mint refresh_token once)
 
-Dynamic OAuth code-flow via a configurable `OAuthClientProvider`.
-Env-configured issuer / client / redirect. Removes the "operator mints
-token out-of-band" step so the harness runs unattended once the client
-is registered with the AS.
+Dynamic OAuth refresh-token adapter — `DynamicOAuthProvider` in
+`apps/conformance-client/src/oauth-provider.ts`. Env-configured issuer /
+client / redirect. The operator performs the browser code-flow ONCE to
+obtain a `refresh_token`; every subsequent conformance run is unattended
+because the provider exchanges refresh_token → access_token via the
+issuer's token endpoint (RFC 6749 §6), caches until near-expiry, and
+re-mints on demand. Errors are surfaced structurally as
+`DynamicOAuthError` with `kind: "http" | "network" | "malformed"` (and
+`status` for HTTP failures).
+
+When the dynamic env surface is fully populated, it takes precedence
+over slice 1's pre-minted bearer token. When it is NOT populated, the
+harness falls back to slice 1 behavior with no change.
+
+```bash
+# One-time (operator, out of band): mint a refresh_token via the issuer's
+# authorization code flow (any OAuth client tool — no MIX code path).
+export MCP_CONFORMANCE_OAUTH_ISSUER="https://issuer.example"
+export MCP_CONFORMANCE_OAUTH_CLIENT_ID="mcp-inspector-x-conformance"
+export MCP_CONFORMANCE_OAUTH_CLIENT_SECRET="…"           # optional; omit for public clients
+export MCP_CONFORMANCE_OAUTH_REDIRECT_URI="http://127.0.0.1:0/cb"
+export MCP_CONFORMANCE_OAUTH_SCOPES="mcp:read mcp:call"  # optional
+export MCP_CONFORMANCE_OAUTH_REFRESH_TOKEN="$(read-refresh-token-from-secure-source)"
+
+# Every subsequent conformance run is unattended:
+npm run conformance -- --url=https://mcp.example.com/    # illustrative
+```
+
+The token endpoint is discovered per RFC 8414
+(`{issuer}/.well-known/oauth-authorization-server`) on the first
+`getAccessToken()` and cached for the process lifetime; if discovery
+returns non-2xx, the adapter falls back to `{issuer}/token`.
 
 ### Slice 3 (pending, same issue #63)
 

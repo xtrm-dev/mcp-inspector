@@ -33,6 +33,7 @@ import {
   type McpServerDescriptor,
   type ProtocolEraPolicy,
 } from "@mcp-inspector-x/protocol";
+import { DynamicOAuthProvider, readOAuthConfigFromEnv } from "./oauth-provider.js";
 
 function fail(msg: string): never {
   process.stderr.write(`[conformance-client] FAIL: ${msg}\n`);
@@ -73,9 +74,21 @@ async function main(): Promise<void> {
   // conformance scenarios. Never logged; the harness supplies these
   // through env at invocation and the values reach the wire through
   // the same descriptor path production servers use.
-  const bearerToken = process.env["MCP_CONFORMANCE_BEARER_TOKEN"];
-  if (bearerToken !== undefined && bearerToken !== "") {
-    descriptor.bearerToken = bearerToken;
+  //
+  // R9 slice 2: if the dynamic-OAuth env surface is fully populated, mint a
+  // fresh access_token from the configured refresh_token and use it. When
+  // it is NOT populated, fall through to slice 1's pre-minted bearer path
+  // unchanged.
+  const dynCfg = readOAuthConfigFromEnv();
+  if (dynCfg) {
+    const provider = new DynamicOAuthProvider(dynCfg);
+    const token = await provider.getAccessToken();
+    descriptor.bearerToken = token;
+  } else {
+    const bearerToken = process.env["MCP_CONFORMANCE_BEARER_TOKEN"];
+    if (bearerToken !== undefined && bearerToken !== "") {
+      descriptor.bearerToken = bearerToken;
+    }
   }
   const rawHeaders = process.env["MCP_CONFORMANCE_CUSTOM_HEADERS"];
   if (rawHeaders !== undefined && rawHeaders !== "") {

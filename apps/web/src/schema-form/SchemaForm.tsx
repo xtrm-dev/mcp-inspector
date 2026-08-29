@@ -4,6 +4,7 @@ import type { IChangeEvent } from "@rjsf/core";
 import type { JsonObject, JsonSchema } from "../api/types";
 import { schemaFormValidator } from "./validator";
 
+
 export interface SchemaFormProps {
   /** capability.inputSchema (JSON-Schema 2020-12). Undefined -> raw-JSON only. */
   schema: JsonSchema | undefined;
@@ -34,7 +35,14 @@ export function SchemaForm({ schema, value, onChange }: SchemaFormProps) {
   function handleFormChange(e: IChangeEvent<Record<string, unknown>>) {
     const next = (e.formData ?? {}) as JsonObject;
     setRawText(JSON.stringify(next, null, 2));
-    onChange(next, (e.errors ?? []).length === 0);
+    // rjsf's `errors` on the change event only reflects field-level errors
+    // it has surfaced under liveValidate; missing-required-property is not
+    // in that list until the user has interacted. Run the full validator
+    // ourselves so `valid` is honest from the first onChange.
+    const valid = hasSchema
+      ? schemaFormValidator.validateFormData(next as never, rjsfSchema as never).errors.length === 0
+      : true;
+    onChange(next, valid);
   }
 
   function handleRawChange(text: string) {

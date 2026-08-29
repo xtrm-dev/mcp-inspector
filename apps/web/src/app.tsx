@@ -30,6 +30,8 @@ import type {
   ExecutionDetail,
   ExecutionRecord,
   InvestigationPacket,
+  JsonObject,
+  JsonSchema,
   ServerSummary,
   WorkspaceNodePresentation,
   WorkspaceNodeRow,
@@ -78,6 +80,7 @@ export function App() {
   const [executionDetails, setExecutionDetails] = useState<Map<string, ExecutionDetail>>(new Map());
   const [executionHistory, setExecutionHistory] = useState<Map<string, ExecutionRecord[]>>(new Map());
   const [descriptions, setDescriptions] = useState<Map<string, string>>(new Map());
+  const [inputSchemas, setInputSchemas] = useState<Map<string, JsonSchema>>(new Map());
   const [runResult, setRunResult] = useState<WorkspaceRunResult | null>(null);
   const [bulkCompare, setBulkCompare] = useState<CompareResult | null>(null);
   const [bulkPacket, setBulkPacket] = useState<{ kind: "handoff"; text: string } | { kind: "export"; packet: InvestigationPacket } | null>(null);
@@ -122,6 +125,7 @@ export function App() {
     setExecutionDetails(new Map());
     setExecutionHistory(new Map());
     setDescriptions(new Map());
+    setInputSchemas(new Map());
     setWorkspaceLoading(true);
     getWorkspace(activeWorkspaceId)
       .then((result) => {
@@ -206,6 +210,7 @@ export function App() {
       if (!cancelled) setExecutionDetails(details);
 
       const docs = new Map<string, string>();
+      const schemas = new Map<string, JsonSchema>();
       for (const node of nodes) {
         if (!node.serverId || !node.capabilityId) continue;
         const parsed = parseCapabilityId(node.capabilityId);
@@ -217,8 +222,14 @@ export function App() {
             ? capabilities.prompts.find((item) => item.name === parsed.name)
             : capabilities.resources.find((item) => item.uri === parsed.name || item.name === parsed.name);
         if (definition?.description) docs.set(node.id, definition.description);
+        if (definition && "inputSchema" in definition && definition.inputSchema) {
+          schemas.set(node.id, definition.inputSchema);
+        }
       }
-      if (!cancelled) setDescriptions(docs);
+      if (!cancelled) {
+        setDescriptions(docs);
+        setInputSchemas(schemas);
+      }
     }).catch((reason) => {
       if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
     });
@@ -247,6 +258,21 @@ export function App() {
   }
 
   const workspaceReady = activeWorkspace?.id === activeWorkspaceId && !workspaceLoading;
+
+  async function runNodeWithArgs(node: WorkspaceNodeRow, args: JsonObject) {
+    if (!activeWorkspaceId) return;
+    const argumentsJson = JSON.stringify(args);
+    if (node.argumentsJson !== argumentsJson) {
+      try {
+        const { node: updated } = await updateWorkspaceNode(activeWorkspaceId, node.id, { argumentsJson });
+        setNodes((current) => current.map((item) => item.id === updated.id ? updated : item));
+      } catch (reason) {
+        setError(reason instanceof Error ? reason.message : String(reason));
+        return;
+      }
+    }
+    await runNodes([node.id]);
+  }
 
   async function runNodes(nodeIds?: string[]) {
     if (!activeWorkspaceId || !workspaceReady || nodes.length === 0) return;
@@ -470,7 +496,9 @@ export function App() {
             executionDetails={executionDetails}
             executionHistory={executionHistory}
             descriptions={descriptions}
+            inputSchemas={inputSchemas}
             runResult={runResult}
+            onRunNode={runNodeWithArgs}
             loading={loading || workspaceLoading}
             running={running}
             error={error}
@@ -499,10 +527,12 @@ export function App() {
             executionDetails={executionDetails}
             executionHistory={executionHistory}
             descriptions={descriptions}
+            inputSchemas={inputSchemas}
             runResult={runResult}
             onSelectNode={setSelectedNodeId}
             onToggleSelected={toggleSelectedNode}
             onPresentationChange={(node, presentation) => void changePresentation(node, presentation)}
+            onRunNode={runNodeWithArgs}
             width={workspaceLayout.detailPaneWidth ?? DETAIL_PANE_DEFAULT_WIDTH}
             onResize={(width) => commitWorkspaceLayout((current) => ({ ...current, detailPaneWidth: clampDetailPaneWidth(width) }))}
           />
@@ -556,7 +586,9 @@ function WorkspaceCanvas({
   executionDetails,
   executionHistory,
   descriptions,
+  inputSchemas,
   runResult,
+  onRunNode,
   loading,
   running,
   error,
@@ -588,7 +620,9 @@ function WorkspaceCanvas({
   executionDetails: Map<string, ExecutionDetail>;
   executionHistory: Map<string, ExecutionRecord[]>;
   descriptions: Map<string, string>;
+  inputSchemas: Map<string, JsonSchema>;
   runResult: WorkspaceRunResult | null;
+  onRunNode: (node: WorkspaceNodeRow, args: JsonObject) => Promise<void>;
   loading: boolean;
   running: boolean;
   error: string | null;
@@ -708,10 +742,12 @@ function WorkspaceCanvas({
             executionDetails={executionDetails}
             executionHistory={executionHistory}
             descriptions={descriptions}
+            inputSchemas={inputSchemas}
             runResult={runResult}
             onSelectNode={onSelectNode}
             onToggleSelected={onToggleSelected}
             onPresentationChange={onPresentationChange}
+            onRunNode={onRunNode}
           />
         )}
       </div>

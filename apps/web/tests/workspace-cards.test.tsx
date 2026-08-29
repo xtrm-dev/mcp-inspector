@@ -106,7 +106,7 @@ describe("workspace capability projections", () => {
     expect(container.querySelector('[data-testid="capability-card-node-echo"]')?.textContent).toContain("18 ms");
     const tabs = container.querySelector(".local-tabs")?.textContent;
     expect(tabs).toContain("Result");
-    expect(tabs).toContain("Parameters");
+    expect(tabs).toContain("Inputs");
     expect(tabs).toContain("Protocol");
     // Stream D: Source and Process/Logs tabs now live in the shared
     // inspector alongside Result/Parameters/Protocol. They render

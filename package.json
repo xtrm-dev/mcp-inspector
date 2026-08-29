@@ -24,6 +24,7 @@
     "test:watch": "vitest",
     "package": "node scripts/package.mjs",
     "smoke": "node scripts/smoke.mjs",
+    "smoke:collapse": "node scripts/smoke-collapse-visible.mjs",
     "conformance": "node scripts/conformance.mjs"
   },
   "devDependencies": {

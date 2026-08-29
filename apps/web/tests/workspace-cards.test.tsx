@@ -196,6 +196,86 @@ describe("workspace capability projections", () => {
     expect(container.querySelector('[data-testid="capability-focus-node-echo"]')).toBeNull();
   });
 
+  it("mix-vd1: Escape collapses the focused node via PATCH and unmounts the overlay", async () => {
+    await act(async () => root.render(<App />));
+    await flush();
+    await flush();
+
+    click('[data-testid="focus-node-echo"]');
+    await flush();
+    expect(container.querySelector('[data-testid="capability-focus-node-echo"]')).not.toBeNull();
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await flush();
+    await flush();
+
+    const patch = fetchSpy.mock.calls
+      .filter(
+        ([input, init]) =>
+          String(input).includes("/api/v1/workspaces/ws-cards/nodes/node-echo") &&
+          (init as RequestInit)?.method === "PATCH",
+      )
+      .at(-1);
+    expect(patch, "Escape must PATCH the focused node to collapsed").toBeDefined();
+    expect(JSON.parse((patch![1] as RequestInit).body as string)).toEqual({ presentation: "collapsed" });
+    expect(storage.workspaceNodes.get("node-echo")?.presentation).toBe("collapsed");
+    expect(container.querySelector('[data-testid="capability-focus-node-echo"]')).toBeNull();
+  });
+
+  it("mix-vd1: Escape collapses an expanded node when nothing is focused", async () => {
+    await act(async () => root.render(<App />));
+    await flush();
+    await flush();
+
+    act(() => {
+      window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    await flush();
+    await flush();
+
+    const patch = fetchSpy.mock.calls
+      .filter(
+        ([input, init]) =>
+          String(input).includes("/api/v1/workspaces/ws-cards/nodes/node-echo") &&
+          (init as RequestInit)?.method === "PATCH",
+      )
+      .at(-1);
+    expect(patch, "Escape without a focused node falls back to the selected expanded node").toBeDefined();
+    expect(JSON.parse((patch![1] as RequestInit).body as string)).toEqual({ presentation: "collapsed" });
+    expect(storage.workspaceNodes.get("node-echo")?.presentation).toBe("collapsed");
+  });
+
+  it("mix-vd1: expanded card's Collapse affordance lives in the card header", async () => {
+    await act(async () => root.render(<App />));
+    await flush();
+    await flush();
+
+    expect(
+      container.querySelector('.capability-card-head [data-testid="collapse-node-echo"]'),
+      "expanded card header should expose the Collapse button",
+    ).not.toBeNull();
+    expect(
+      container.querySelector('.capability-card-head [data-testid="collapse-node-echo"]'),
+      "canonical collapse testid should resolve to the header button, not the strip",
+    ).toBe(container.querySelector('[data-testid="collapse-node-echo"]'));
+
+    click('.capability-card-head [data-testid="collapse-node-echo"]');
+    await flush();
+
+    const patch = fetchSpy.mock.calls
+      .filter(
+        ([input, init]) =>
+          String(input).includes("/api/v1/workspaces/ws-cards/nodes/node-echo") &&
+          (init as RequestInit)?.method === "PATCH",
+      )
+      .at(-1);
+    expect(patch, "header Collapse must PATCH the node presentation").toBeDefined();
+    expect(JSON.parse((patch![1] as RequestInit).body as string)).toEqual({ presentation: "collapsed" });
+    expect(document.querySelector('.capability-card-head [data-testid="collapse-node-echo"]')).toBeNull();
+  });
+
   it("persists the shared Graph selection, snapped positions, viewport, and reset layout", async () => {
     storage.workspaceNodes.create({
       id: "node-clock",

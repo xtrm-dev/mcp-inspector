@@ -167,7 +167,8 @@ describe("workspace capability projections", () => {
     expect(container.querySelector('[data-testid="workspace-graph"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="graph-node-node-echo"]')?.textContent).toContain("echo");
     expect(container.querySelector('[data-testid="graph-node-node-clock"]')?.textContent).toContain("clock");
-    expect(container.querySelectorAll(".workspace-graph-edge")).toHaveLength(0);
+    // Two same-server nodes now derive one sibling edge.
+    expect(container.querySelectorAll(".workspace-graph-edge")).toHaveLength(1);
 
     pointer('[data-testid="graph-node-node-clock"]', "pointerdown", 220, 80, { ctrlKey: true });
     pointer('[data-testid="workspace-graph"]', "pointerup", 220, 80, { ctrlKey: true });
@@ -191,5 +192,103 @@ describe("workspace capability projections", () => {
     const reset = JSON.parse(storage.workspaces.get("ws-cards")!.layoutJson);
     expect(reset.futureSlice).toEqual({ keep: true });
     expect(reset.graph.positions["node-echo"]).not.toEqual({ x: 80, y: 100 });
+  });
+
+  it("renders real workspace edges between two capability nodes on the same server", async () => {
+    storage.workspaceNodes.create({
+      id: "node-clock",
+      workspaceId: "ws-cards",
+      serverId: "srv-local",
+      capabilityId: "srv-local::tool::clock",
+      argumentsJson: JSON.stringify({ timezone: "UTC" }),
+    });
+    storage.workspaces.update("ws-cards", {
+      layoutJson: JSON.stringify({ projection: "graph", selectedNodeIds: [] }),
+    });
+
+    await act(async () => root.render(<App />));
+    await flush();
+    await flush();
+
+    expect(container.querySelector('[data-testid="workspace-graph"]')).not.toBeNull();
+    // Two nodes on the same server produce one sibling edge.
+    expect(container.querySelectorAll(".workspace-graph-edge").length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("bulk-action toolbar emits the expected API calls for Export / Compare / Handoff / Remove", async () => {
+    storage.workspaceNodes.create({
+      id: "node-clock",
+      workspaceId: "ws-cards",
+      serverId: "srv-local",
+      capabilityId: "srv-local::tool::clock",
+      argumentsJson: JSON.stringify({ timezone: "UTC" }),
+    });
+    const secondExec = storage.executions.create({
+      id: "exec-clock",
+      workspaceId: "ws-cards",
+      workspaceNodeId: "node-clock",
+      serverId: "srv-local",
+      capabilityId: "srv-local::tool::clock",
+      status: "complete",
+    });
+    storage.rounds.append({
+      executionId: secondExec.id,
+      roundIndex: 0,
+      kind: "initial",
+      argumentsJson: JSON.stringify({ timezone: "UTC" }),
+      resultInlineJson: JSON.stringify({ now: "2026-08-29T00:00:00Z" }),
+      durationMs: 5,
+    });
+    storage.workspaces.update("ws-cards", {
+      layoutJson: JSON.stringify({ projection: "grid", selectedNodeIds: ["node-echo", "node-clock"] }),
+    });
+
+    await act(async () => root.render(<App />));
+    await flush();
+    await flush();
+
+    expect(container.textContent).toContain("2 selected");
+
+    // Export selected → POST /api/v1/packets/build with both execution IDs, JSON tier.
+    click('[data-testid="export-selected"]');
+    await flush();
+    await flush();
+    const exportCall = fetchSpy.mock.calls.find(([input, init]) => String(input).endsWith("/api/v1/packets/build") && (init as RequestInit | undefined)?.method === "POST");
+    expect(exportCall).toBeDefined();
+    const exportBody = JSON.parse((exportCall![1] as RequestInit).body as string);
+    expect(exportBody.executionIds.sort()).toEqual(["exec-clock", "exec-echo"]);
+    expect(exportBody.format).toBe("json");
+    expect(container.querySelector('[data-testid="bulk-export-json"]')).not.toBeNull();
+
+    // Compare selected → POST /api/v1/executions/compare with both IDs.
+    click('[data-testid="compare-selected"]');
+    await flush();
+    await flush();
+    const compareCall = fetchSpy.mock.calls.find(([input, init]) => String(input).endsWith("/api/v1/executions/compare") && (init as RequestInit | undefined)?.method === "POST");
+    expect(compareCall).toBeDefined();
+    const compareBody = JSON.parse((compareCall![1] as RequestInit).body as string);
+    expect([compareBody.leftId, compareBody.rightId].sort()).toEqual(["exec-clock", "exec-echo"]);
+    expect(container.querySelector('[data-testid="comparison-view"]')).not.toBeNull();
+
+    // Handoff selected → POST /api/v1/packets/build with format=markdown.
+    click('[data-testid="handoff-selected"]');
+    await flush();
+    await flush();
+    const handoffCall = fetchSpy.mock.calls.filter(([input, init]) => String(input).endsWith("/api/v1/packets/build") && (init as RequestInit | undefined)?.method === "POST").pop();
+    expect(handoffCall).toBeDefined();
+    const handoffBody = JSON.parse((handoffCall![1] as RequestInit).body as string);
+    expect(handoffBody.format).toBe("markdown");
+    expect(container.querySelector('[data-testid="bulk-handoff-text"]')).not.toBeNull();
+
+    // Remove selected → one DELETE per node id.
+    click('[data-testid="remove-selected"]');
+    await flush();
+    await flush();
+    const deleteCalls = fetchSpy.mock.calls.filter(([input, init]) => (init as RequestInit | undefined)?.method === "DELETE" && String(input).includes("/api/v1/workspaces/ws-cards/nodes/"));
+    const deletedIds = deleteCalls.map(([input]) => String(input).split("/nodes/")[1]).sort();
+    expect(deletedIds).toEqual(["node-clock", "node-echo"]);
+
+    expect(storage.workspaceNodes.get("node-echo")).toBeFalsy();
+    expect(storage.workspaceNodes.get("node-clock")).toBeFalsy();
   });
 });

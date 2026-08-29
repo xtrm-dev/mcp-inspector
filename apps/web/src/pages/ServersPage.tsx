@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   callTool,
   connectServer,
@@ -6,9 +6,11 @@ import {
   createServer,
   deleteServer,
   disconnectServer,
+  getServer,
   getServerCapabilities,
   listServers,
   testServerConnection,
+  updateServer,
 } from "../api/client";
 import type {
   ExecutionEnvelope,
@@ -16,8 +18,10 @@ import type {
   McpPromptDefinition,
   McpResourceDefinition,
   McpToolDefinition,
+  ServerDetail,
   ServerSummary,
   Transport,
+  UpdateServerInput,
 } from "../api/types";
 import { SchemaForm } from "../schema-form";
 import { RendererView } from "../renderer-view";
@@ -64,11 +68,35 @@ function parseArgsText(raw: string): string[] {
   return out;
 }
 
+// Inverse of parseArgsText: renders back a shell-ish line (whitespace-bearing
+// args re-quoted). Only used to prefill the edit form.
+function joinArgsText(args: string[]): string {
+  return args.map((a) => (/\s/.test(a) ? `"${a}"` : a)).join(" ");
+}
+
+// Reads which auth flavor a stored binding uses (field presence, never the
+// secret value). credentialRefId ⇒ bearer; headerCredentials ⇒ custom header.
+function deriveAuthKind(
+  server: Pick<ServerDetail, "credentialRefId" | "headerCredentials">,
+): AuthKind {
+  return server.credentialRefId
+    ? "bearer"
+    : server.headerCredentials && Object.keys(server.headerCredentials).length > 0
+      ? "header"
+      : "none";
+}
+
 export function ServersPage() {
   const [servers, setServers] = useState<ServerSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [form, setForm] = useState(emptyForm);
+  const [mode, setMode] = useState<"create" | "edit">("create");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editOriginal, setEditOriginal] = useState<ServerDetail | null>(null);
+  // Guards beginEdit's async getServer against out-of-order responses when
+  // the operator clicks Edit on another row (or cancels) mid-flight.
+  const editSeq = useRef(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [capabilities, setCapabilities] = useState<{
     tools: McpToolDefinition[];
@@ -147,12 +175,141 @@ export function ServersPage() {
     }
   }
 
+  async function beginEdit(s: ServerSummary) {
+    const seq = ++editSeq.current;
+    try {
+      const { server } = await getServer(s.id);
+      if (seq !== editSeq.current) return; // superseded by a newer Edit click / cancel
+      const authKind = deriveAuthKind(server);
+      setForm({
+        displayName: server.displayName,
+        transport: server.transport,
+        endpoint: server.endpoint ?? "",
+        command: server.command ?? "",
+        argsText: server.args ? joinArgsText(server.args) : "",
+        cwd: server.cwd ?? "",
+        // env is never prefilled — stdio env values are credentials; empty
+        // means "keep existing" on save.
+        envText: "",
+        authKind,
+        headerName:
+          authKind === "header"
+            ? Object.keys(server.headerCredentials!)[0] ?? emptyForm.headerName
+            : emptyForm.headerName,
+        authValue: "", // never prefilled — placeholder "keep existing"
+        connectNow: false,
+      });
+      setMode("edit");
+      setEditingId(s.id);
+      setEditOriginal(server);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  function cancelEdit() {
+    editSeq.current++;
+    setMode("create");
+    setEditingId(null);
+    setEditOriginal(null);
+    setForm(emptyForm);
+  }
+
+  // Edit mode: PATCH only what changed; secret fields (authValue, env) are
+  // sent only when newly entered — empty means "keep existing" (routes.ts
+  // reconnects automatically on material change).
+  async function handleUpdate() {
+    if (!editingId) return;
+    const original = editOriginal;
+    const originalKind = editOriginal ? deriveAuthKind(editOriginal) : "none";
+    try {
+      const patch: UpdateServerInput = {};
+      if (form.displayName !== original?.displayName) patch.displayName = form.displayName;
+      if (form.transport !== original?.transport) patch.transport = form.transport;
+      if (form.transport === "streamable-http") {
+        const endpoint = form.endpoint.trim() || null;
+        if (endpoint !== original?.endpoint) patch.endpoint = endpoint;
+      } else {
+        const command = form.command.trim();
+        if (!command) throw new Error("command is required for stdio transport");
+        if (command !== original?.command) patch.command = command;
+        const argsText = form.argsText.trim();
+        const args = argsText ? parseArgsText(argsText) : [];
+        const originalArgs = original?.args ?? [];
+        if (args.length !== originalArgs.length || args.some((a, i) => a !== originalArgs[i])) {
+          patch.args = args;
+        }
+        const cwd = form.cwd.trim();
+        if (cwd && cwd !== original?.cwd) patch.cwd = cwd;
+        const envText = form.envText.trim();
+        if (envText) patch.env = parseEnvText(envText);
+        // empty envText ⇒ keep existing env untouched
+      }
+      if (form.authValue) {
+        // A new secret was entered → create a session credential and point
+        // the selected kind at it. The sibling binding is always nulled so the
+        // gateway never resolves BOTH bearerToken and customHeaders (old,
+        // possibly revoked tokens must not keep being sent — servers.ts:145/148).
+        if (form.authKind === "header" && !form.headerName.trim()) {
+          throw new Error("header name is required for custom-header auth");
+        }
+        const cred = await createCredential({
+          provider: "session",
+          key: `spa-${form.authKind}-${Date.now()}`,
+          value: form.authValue,
+        });
+        if (form.authKind === "bearer") {
+          patch.credentialRefId = cred.credentialRef.id;
+          patch.headerCredentials = null;
+        } else {
+          const rest = { ...(original?.headerCredentials ?? {}) };
+          delete rest[form.headerName]; // keep sibling headers, replace only this one
+          patch.headerCredentials = { ...rest, [form.headerName]: cred.credentialRef.id };
+          patch.credentialRefId = null;
+        }
+      } else if (form.authKind === "none") {
+        // Explicit removal: when any binding exists (bearer, header, or rows
+        // created outside this UI via raw API/import with both), drop ALL of
+        // them — unconditional double-null is strictly safer than deriving
+        // one kind. Nothing to remove ⇒ no credential keys in the PATCH.
+        if (
+          original?.credentialRefId != null ||
+          (original?.headerCredentials && Object.keys(original.headerCredentials).length > 0)
+        ) {
+          patch.credentialRefId = null;
+          patch.headerCredentials = null;
+        }
+      } else if (form.authKind !== originalKind) {
+        // Picked a different kind but entered no value → reject instead of
+        // silently keeping the old binding under a mismatched select.
+        throw new Error("auth value is required for the selected auth kind");
+      }
+      // else: same kind, no new value → keep existing (empty = no change).
+      if (Object.keys(patch).length > 0) {
+        await updateServer(editingId, patch);
+      }
+      cancelEdit();
+      refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (mode === "edit") {
+      await handleUpdate();
+      return;
+    }
+    await handleCreate(e);
+  }
+
   return (
     <div className="page" data-testid="servers-page">
       <h2>Server catalog</h2>
       {error && <p className="form-error">{error}</p>}
 
-      <form className="panel" onSubmit={handleCreate}>
+      <form className="panel" onSubmit={handleSubmit}>
         <div className="field-row">
           <label>
             Display name
@@ -182,14 +339,16 @@ export function ServersPage() {
               />
             </label>
           )}
-          <label className="checkbox-label">
-            <input
-              type="checkbox"
-              checked={form.connectNow}
-              onChange={(e) => setForm({ ...form, connectNow: e.target.checked })}
-            />
-            Connect now
-          </label>
+          {mode === "create" && (
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={form.connectNow}
+                onChange={(e) => setForm({ ...form, connectNow: e.target.checked })}
+              />
+              Connect now
+            </label>
+          )}
         </div>
         {form.transport === "stdio" && (
           <div className="field-row stdio-config">
@@ -227,7 +386,11 @@ export function ServersPage() {
                 data-testid="stdio-env"
                 rows={3}
                 value={form.envText}
-                placeholder={"MCP_LOG_LEVEL=info\nMY_API_KEY=..."}
+                placeholder={
+                  mode === "edit"
+                    ? "keep existing (KEY=VALUE per line)"
+                    : "MCP_LOG_LEVEL=info\nMY_API_KEY=..."
+                }
                 onChange={(e) => setForm({ ...form, envText: e.target.value })}
               />
             </label>
@@ -238,6 +401,7 @@ export function ServersPage() {
             <label>
               Auth
               <select
+                data-testid="auth-kind"
                 value={form.authKind}
                 onChange={(e) =>
                   setForm({ ...form, authKind: e.target.value as AuthKind, authValue: "" })
@@ -263,9 +427,11 @@ export function ServersPage() {
                 {form.authKind === "bearer" ? "Bearer token" : "Header value"}
                 <input
                   type="password"
+                  data-testid="auth-value"
                   autoComplete="off"
                   spellCheck={false}
                   value={form.authValue}
+                  placeholder={mode === "edit" ? "keep existing" : ""}
                   onChange={(e) => setForm({ ...form, authValue: e.target.value })}
                 />
               </label>
@@ -273,8 +439,13 @@ export function ServersPage() {
           </div>
         )}
         <button className="button primary" type="submit">
-          Add server
+          {mode === "edit" ? "Save changes" : "Add server"}
         </button>
+        {mode === "edit" && (
+          <button type="button" className="button" onClick={cancelEdit}>
+            Cancel
+          </button>
+        )}
       </form>
 
       {loading && <p className="muted">loading…</p>}
@@ -299,6 +470,7 @@ export function ServersPage() {
                 </span>
               </td>
               <td className="row-actions" onClick={(e) => e.stopPropagation()}>
+                <button onClick={() => beginEdit(s)}>Edit</button>
                 <button onClick={() => connectServer(s.id).then(refresh)}>Connect</button>
                 <button onClick={() => disconnectServer(s.id).then(refresh)}>Disconnect</button>
                 <button

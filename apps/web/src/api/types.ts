@@ -81,6 +81,18 @@ export interface ServerSummary {
   negotiation: ProtocolNegotiation | null;
 }
 
+/** Full server row as returned by GET /api/v1/servers/:id — adds the
+ * stdio/credential fields the list summary hides. Secret-bearing fields
+ * (env values, credential ref ids) must never be rendered as plaintext. */
+export interface ServerDetail extends ServerSummary {
+  command: string | null;
+  args: string[] | null;
+  cwd: string | null;
+  env: Record<string, string> | null;
+  credentialRefId: string | null;
+  headerCredentials: Record<string, string> | null;
+}
+
 export interface CreateServerInput {
   id?: string;
   displayName: string;

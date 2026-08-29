@@ -35,6 +35,7 @@ import type {
   RendererDescriptor,
   RetryResult,
   RunWorkspaceInput,
+  ServerDetail,
   ServerSummary,
   SourceRevision,
   UpdateServerInput,
@@ -75,7 +76,7 @@ const patchJson = (body: unknown): RequestInit => ({ method: "PATCH", body: JSON
 // ---- Servers ----
 
 export const listServers = (): Promise<{ servers: ServerSummary[] }> => request("/api/v1/servers");
-export const getServer = (id: string): Promise<{ server: ServerSummary }> =>
+export const getServer = (id: string): Promise<{ server: ServerDetail }> =>
   request(`/api/v1/servers/${encodeURIComponent(id)}`);
 export const createServer = (
   input: CreateServerInput,

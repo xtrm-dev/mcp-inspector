@@ -139,6 +139,63 @@ describe("workspace capability projections", () => {
     expect(container.querySelector('[data-testid="capability-focus-node-echo"]')).not.toBeNull();
   });
 
+  it("mix-vd1: expanded grid card exposes Collapse that PATCHes and collapses (regression)", async () => {
+    await act(async () => root.render(<App />));
+    await flush();
+    await flush();
+
+    const card = container.querySelector<HTMLElement>('[data-testid="capability-card-node-echo"]');
+    expect(card).not.toBeNull();
+
+    const collapseBtn = container.querySelector<HTMLElement>('[data-testid="collapse-node-echo"]');
+    expect(collapseBtn, "expanded card should expose a Collapse affordance").not.toBeNull();
+
+    act(() => collapseBtn!.click());
+    await flush();
+
+    const patch = fetchSpy.mock.calls.find(
+      ([input, init]) =>
+        String(input).includes("/api/v1/workspaces/ws-cards/nodes/node-echo") &&
+        (init as RequestInit)?.method === "PATCH",
+    );
+    expect(patch, "Collapse must PATCH the node presentation endpoint").toBeDefined();
+    expect(JSON.parse((patch![1] as RequestInit).body as string)).toEqual({ presentation: "collapsed" });
+
+    await flush();
+    expect(card!.querySelector(".local-tabs")).toBeNull();
+    expect(container.querySelector('[data-testid="collapse-node-echo"]')).toBeNull();
+    expect(storage.workspaceNodes.get("node-echo")?.presentation).toBe("collapsed");
+  });
+
+  it("mix-vd1: focus overlay exposes Collapse that PATCHes and unmounts overlay (regression)", async () => {
+    await act(async () => root.render(<App />));
+    await flush();
+    await flush();
+
+    click('[data-testid="focus-node-echo"]');
+    await flush();
+    const overlay = container.querySelector<HTMLElement>('[data-testid="capability-focus-node-echo"]');
+    expect(overlay, "focus overlay rendered").not.toBeNull();
+
+    const overlayCollapse = overlay!.querySelector<HTMLElement>('[data-testid="collapse-node-echo"]');
+    expect(overlayCollapse, "focus overlay exposes Collapse").not.toBeNull();
+
+    act(() => overlayCollapse!.click());
+    await flush();
+
+    const patch = fetchSpy.mock.calls
+      .filter(
+        ([input, init]) =>
+          String(input).includes("/api/v1/workspaces/ws-cards/nodes/node-echo") &&
+          (init as RequestInit)?.method === "PATCH",
+      )
+      .at(-1);
+    expect(patch, "collapse from focus overlay must issue a PATCH").toBeDefined();
+    expect(JSON.parse((patch![1] as RequestInit).body as string)).toEqual({ presentation: "collapsed" });
+    expect(storage.workspaceNodes.get("node-echo")?.presentation).toBe("collapsed");
+    expect(container.querySelector('[data-testid="capability-focus-node-echo"]')).toBeNull();
+  });
+
   it("persists the shared Graph selection, snapped positions, viewport, and reset layout", async () => {
     storage.workspaceNodes.create({
       id: "node-clock",

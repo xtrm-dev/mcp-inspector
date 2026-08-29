@@ -4,6 +4,8 @@ import { parseCapabilityId } from "../api/capability-id";
 import type {
   ExecutionDetail,
   ExecutionRecord,
+  JsonObject,
+  JsonSchema,
   JsonValue,
   ServerSummary,
   SourceHint,
@@ -13,6 +15,7 @@ import type {
   WorkspaceRunResult,
 } from "../api/types";
 import { RendererView, suggestKindClientSide } from "../renderer-view";
+import { SchemaForm, schemaFormValidator } from "../schema-form";
 
 export interface WorkspaceProjectionsProps {
   projection: "grid" | "list";
@@ -23,10 +26,12 @@ export interface WorkspaceProjectionsProps {
   executionDetails: Map<string, ExecutionDetail>;
   executionHistory: Map<string, ExecutionRecord[]>;
   descriptions: Map<string, string>;
+  inputSchemas: Map<string, JsonSchema>;
   runResult: WorkspaceRunResult | null;
   onSelectNode: (id: string) => void;
   onToggleSelected: (id: string) => void;
   onPresentationChange: (node: WorkspaceNodeRow, presentation: WorkspaceNodePresentation) => void;
+  onRunNode: (node: WorkspaceNodeRow, args: JsonObject) => Promise<void>;
 }
 
 export interface NodeProjectionProps extends Omit<WorkspaceProjectionsProps, "projection" | "nodes"> {
@@ -89,6 +94,7 @@ export function CapabilityInspector(props: NodeProjectionProps) {
 function CapabilityCard(props: NodeProjectionProps & { forceExpanded?: boolean }) {
   const summary = getWorkspaceNodeSummary(props);
   const isExpanded = props.forceExpanded || props.node.presentation !== "collapsed";
+  const runState = useCapabilityRun(props);
   return (
     <article
       className={`capability-card ${props.node.presentation} ${props.selectedNodeId === props.node.id ? "active" : ""}`}
@@ -108,8 +114,8 @@ function CapabilityCard(props: NodeProjectionProps & { forceExpanded?: boolean }
         <Metric label="Availability" value={summary.availability} tone={summary.available ? "ok" : "error"} />
         <Metric label="Result" value={summary.result} />
       </div>
-      <PresentationActions {...props} />
-      {isExpanded && <InspectionTabs {...props} />}
+      <PresentationActions {...props} runState={runState} />
+      {isExpanded && <InspectionTabs {...props} runState={runState} />}
     </article>
   );
 }
@@ -117,6 +123,7 @@ function CapabilityCard(props: NodeProjectionProps & { forceExpanded?: boolean }
 function CapabilityListRows(props: NodeProjectionProps) {
   const summary = getWorkspaceNodeSummary(props);
   const expanded = props.node.presentation !== "collapsed";
+  const runState = useCapabilityRun(props);
   return (
     <>
       <tr
@@ -137,15 +144,56 @@ function CapabilityListRows(props: NodeProjectionProps) {
         <td>{summary.protocol}</td>
         <td className={summary.available ? "available" : "unavailable"}>{summary.availability}</td>
         <td className="result-cell">{summary.result}</td>
-        <td><PresentationActions {...props} compact /></td>
+        <td><PresentationActions {...props} runState={runState} compact /></td>
       </tr>
       {expanded && (
         <tr className="capability-list-inspector">
-          <td colSpan={10}><InspectionTabs {...props} /></td>
+          <td colSpan={10}><InspectionTabs {...props} runState={runState} /></td>
         </tr>
       )}
     </>
   );
+}
+
+interface CapabilityRunState {
+  inputSchema: JsonSchema | undefined;
+  hasSchema: boolean;
+  args: JsonObject;
+  setArgs: (next: JsonObject, valid: boolean) => void;
+  valid: boolean;
+  busy: boolean;
+  canRun: boolean;
+  run: () => Promise<void>;
+}
+
+function useCapabilityRun(props: NodeProjectionProps): CapabilityRunState {
+  const inputSchema = props.inputSchemas.get(props.node.id);
+  const hasSchema = inputSchema !== undefined && Object.keys(inputSchema).length > 0;
+  const [args, setArgsState] = useState<JsonObject>(() => parseArgsObject(props.node.argumentsJson));
+  const [valid, setValid] = useState(() => validateAgainstSchema(inputSchema, parseArgsObject(props.node.argumentsJson)));
+  const [busy, setBusy] = useState(false);
+  // Reseed when a fresh persisted args value lands (e.g. after a run), or
+  // when the schema resolves for the first time (async /capabilities fetch).
+  useEffect(() => {
+    const seeded = parseArgsObject(props.node.argumentsJson);
+    setArgsState(seeded);
+    setValid(validateAgainstSchema(inputSchema, seeded));
+  }, [inputSchema, props.node.id, props.node.argumentsJson]);
+  const setArgs = (next: JsonObject, nextValid: boolean) => {
+    setArgsState(next);
+    setValid(nextValid);
+  };
+  const canRun = !busy && (!hasSchema || valid);
+  async function run() {
+    if (!canRun) return;
+    setBusy(true);
+    try {
+      await props.onRunNode(props.node, args);
+    } finally {
+      setBusy(false);
+    }
+  }
+  return { inputSchema, hasSchema, args, setArgs, valid, busy, canRun, run };
 }
 
 function SelectionToggle(props: NodeProjectionProps) {
@@ -161,14 +209,35 @@ function SelectionToggle(props: NodeProjectionProps) {
   );
 }
 
-function PresentationActions(props: NodeProjectionProps & { compact?: boolean }) {
+function PresentationActions(props: NodeProjectionProps & { compact?: boolean; runState: CapabilityRunState }) {
   const setPresentation = (presentation: WorkspaceNodePresentation) => (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     props.onPresentationChange(props.node, presentation);
   };
+  const { runState } = props;
+  const collapsed = props.node.presentation === "collapsed";
+  function handleRun(event: MouseEvent<HTMLButtonElement>) {
+    event.stopPropagation();
+    // A collapsed node hides the Inputs form; expand first so the operator
+    // can see and fill required fields before the actual PATCH+run fires.
+    if (collapsed && runState.hasSchema && !runState.valid) {
+      props.onPresentationChange(props.node, "expanded");
+      return;
+    }
+    void runState.run();
+  }
+  const runDisabled = collapsed ? false : !runState.canRun;
   return (
     <div className={`presentation-actions ${props.compact ? "compact" : ""}`}>
-      {props.node.presentation === "collapsed" ? (
+      <button
+        className="button primary"
+        data-testid={`run-node-${props.node.id}`}
+        disabled={runDisabled}
+        onClick={handleRun}
+      >
+        {runState.busy ? "Running…" : "Run"}
+      </button>
+      {collapsed ? (
         <button onClick={setPresentation("expanded")}>Expand</button>
       ) : (
         <button data-testid={`collapse-${props.node.id}`} onClick={setPresentation("collapsed")}>Collapse</button>
@@ -181,7 +250,7 @@ function PresentationActions(props: NodeProjectionProps & { compact?: boolean })
   );
 }
 
-function InspectionTabs(props: NodeProjectionProps) {
+function InspectionTabs(props: NodeProjectionProps & { runState: CapabilityRunState }) {
   const detail = props.executionDetails.get(props.node.id);
   const round = detail?.rounds.at(-1);
   const server = props.node.serverId ? props.servers.get(props.node.serverId) : undefined;
@@ -189,6 +258,7 @@ function InspectionTabs(props: NodeProjectionProps) {
   const description = props.descriptions.get(props.node.id);
   const result = parseJson(round?.resultInlineJson);
   const error = parseJson(round?.errorJson);
+  const { runState } = props;
   const [traces, setTraces] = useState<TraceLinkSummary[] | null>(null);
   const [packet, setPacket] = useState<string | null>(null);
   const [packetError, setPacketError] = useState<string | null>(null);
@@ -215,8 +285,28 @@ function InspectionTabs(props: NodeProjectionProps) {
           : <RendererView value={result} resultArtifact={round.resultArtifact} suggestedRenderer={result === undefined ? undefined : suggestKindClientSide(result)} />,
       });
     }
-    if (props.node.argumentsJson) {
-      available.push({ id: "parameters", label: "Parameters", content: <pre>{formatArguments(props.node.argumentsJson)}</pre> });
+    if (runState.hasSchema || props.node.argumentsJson) {
+      available.push({
+        id: "inputs",
+        label: "Inputs",
+        content: (
+          <div className="inputs-tab" data-testid={`inputs-tab-${props.node.id}`}>
+            <SchemaForm
+              schema={runState.inputSchema}
+              value={runState.args}
+              onChange={runState.setArgs}
+            />
+            <button
+              className="button primary"
+              data-testid={`inputs-run-${props.node.id}`}
+              disabled={!runState.canRun}
+              onClick={(event) => { event.stopPropagation(); void runState.run(); }}
+            >
+              {runState.busy ? "Running…" : "Save & Run"}
+            </button>
+          </div>
+        ),
+      });
     }
     if (description) available.push({ id: "docs", label: "Docs", content: <p className="inspection-docs">{description}</p> });
     if (server) available.push({ id: "protocol", label: "Protocol", content: <ProtocolDetails server={server} /> });
@@ -253,7 +343,7 @@ function InspectionTabs(props: NodeProjectionProps) {
       });
     }
     return available;
-  }, [description, detail, error, history, packet, packetError, props.node.argumentsJson, result, round, server, traces]);
+  }, [description, detail, error, history, packet, packetError, props.node.argumentsJson, props.node.id, result, round, runState, server, traces]);
 
   const [activeTab, setActiveTab] = useState("result");
   useEffect(() => {
@@ -430,10 +520,12 @@ function nodeProps(props: WorkspaceProjectionsProps, node: WorkspaceNodeRow): No
     executionDetails: props.executionDetails,
     executionHistory: props.executionHistory,
     descriptions: props.descriptions,
+    inputSchemas: props.inputSchemas,
     runResult: props.runResult,
     onSelectNode: props.onSelectNode,
     onToggleSelected: props.onToggleSelected,
     onPresentationChange: props.onPresentationChange,
+    onRunNode: props.onRunNode,
   };
 }
 
@@ -477,10 +569,26 @@ function parseJson(value?: string | null): JsonValue | undefined {
   try { return JSON.parse(value) as JsonValue; } catch { return value; }
 }
 
-function formatJson(value: JsonValue) {
-  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
+function validateAgainstSchema(schema: JsonSchema | undefined, value: JsonObject): boolean {
+  if (!schema || Object.keys(schema).length === 0) return true;
+  try {
+    return schemaFormValidator.validateFormData(value as never, schema as never).errors.length === 0;
+  } catch {
+    return true;
+  }
 }
 
-function formatArguments(value: string) {
-  try { return JSON.stringify(JSON.parse(value), null, 2); } catch { return value; }
+function parseArgsObject(value?: string | null): JsonObject {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed as JsonObject;
+    return {};
+  } catch {
+    return {};
+  }
+}
+
+function formatJson(value: JsonValue) {
+  return typeof value === "string" ? value : JSON.stringify(value, null, 2);
 }

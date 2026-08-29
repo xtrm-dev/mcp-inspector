@@ -103,7 +103,9 @@ export function AgentRunWorkspaceProjection({ agentRunId }: Props) {
         executionDetails={details}
         executionHistory={new Map()}
         descriptions={new Map()}
+        inputSchemas={new Map()}
         runResult={null}
+        onRunNode={async () => {}}
         onSelectNode={setSelectedNodeId}
         onToggleSelected={() => {}}
         onPresentationChange={(node, presentation) => {

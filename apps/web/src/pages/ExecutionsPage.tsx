@@ -226,7 +226,9 @@ function ExecutionDetailView({ id, onChanged }: { id: string; onChanged: () => v
               executionDetails={detailMap}
               executionHistory={new Map()}
               descriptions={new Map()}
+              inputSchemas={new Map()}
               runResult={null}
+              onRunNode={async () => {}}
               onSelectNode={() => {}}
               onToggleSelected={() => {}}
               onPresentationChange={() => {}}

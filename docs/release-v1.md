@@ -205,3 +205,63 @@ returns non-2xx, the adapter falls back to `{issuer}/token`.
 Operator-in-the-loop remote-MCP OAuth E2E — real browser redirect,
 consent screen, PKCE, refresh cycle, all captured as durable evidence.
 Requires a real MCP OAuth issuer + a scripted operator step.
+
+## Residual reconciliation — post-#87 (2026-08-29)
+
+Audit `/tmp/mcpdispatch.md` established that `dev` was NOT
+promotion-ready after #87 and that CI was RED. Streams reopened:
+
+- **Gate 0 — CI GREEN (PR #88 merged)** — typecheck breaks in
+  `apps/gateway/src/demo-mcp.ts` (`typeof msg` narrowing to `never`)
+  and `apps/web/src/components/AgentRunWaterfall.tsx`
+  (`ex.createdAt` not on `ExecutionRecord`) repaired.
+- **Stream A dispatched (branch `wave/r1-r2-protocol-final`)** —
+  R1.3 real `resultType:"task"` extension + `pollIntervalMs`
+  scheduler + `tasks/update` input-required lifecycle E2E; R2.2
+  byte-precise `server/discover` envelope fixture. Reopens #60, #61.
+- **Stream B dispatched (branch `wave/ws-residual-ux`)** — stdio
+  server config UI (Scenario A step 2 unblock), real workspace edges
+  (drops `edges={[]}`), 4 bulk workspace actions
+  (Export/Compare/Remove/Handoff). Reopens #64.
+
+### Wave landings
+
+| PR | Slice | Status |
+|----|-------|--------|
+| #88 | Gate 0 — CI typecheck fix | merged |
+| #89 | Stream F — R9 slice 2 dynamic OAuth adapter (#63) | merged |
+| #90 | Infra — osv-scanner linked-worktree fix | merged |
+| #91 | Stream D — shared inspector on Executions + AgentRun Graph/Workspace + Source/Logs tabs (#64) | merged |
+| #92 | Stream B — stdio config UI + real workspace edges + 4 bulk actions (#64) | merged |
+| #93 | Stream A — R1 real Task extension + `pollIntervalMs` scheduler + input-required + R2 envelope fixture (#60, #61) | merged |
+| #94 | Stream E — Source Runtime + Combined graph + code viewer (5 sub-views) (#64) | merged |
+| #95 | Stream C — product-owned HTTP wire recorder (raw request/response + Authorization redaction) (#23) | merged |
+
+### Integrated dev verification snapshot
+
+- `npm run typecheck` — green across every package.
+- `npm run test` — 66 test files, 333 tests pass, 3 skipped, 0 fail.
+- `npm run build` — green.
+- CI on dev — required checks green (verify, semgrep, osv, gitleaks,
+  socket, conformance-core, promotion-policy).
+
+### Trackers reconciled
+
+- #1 — closed as superseded by #23.
+- #60 R1 — closed by #93.
+- #61 R2 — closed by #93.
+- #62 P0 — closed prior.
+- #64 R-UX — closed by #91 + #92 + #94.
+- #63 R9 — slice 2 landed (#89); slice 3 (real MCP OAuth issuer +
+  operator step) remains external-dep-blocked.
+
+### Outstanding external-dependency work
+
+- **#63 R9 slice 3** — real MCP OAuth issuer + scripted operator
+  step (browser + PKCE + refresh cycle E2E). Runbook in the
+  "OAuth qualification" section above.
+- **Packaged final smoke rerun + PRD §36 A–H** on packaged current
+  dev — script exists; needs a full end-to-end run against real MCP
+  servers and durable evidence capture.
+- **`dev → main` promotion PR** — requires explicit user
+  authorization to open; every gate above is satisfied.

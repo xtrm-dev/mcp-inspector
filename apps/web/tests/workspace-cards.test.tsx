@@ -108,9 +108,11 @@ describe("workspace capability projections", () => {
     expect(tabs).toContain("Result");
     expect(tabs).toContain("Parameters");
     expect(tabs).toContain("Protocol");
-    expect(tabs).not.toContain("Source");
-    expect(tabs).not.toContain("Process");
-    expect(tabs).not.toContain("Logs");
+    // Stream D: Source and Process/Logs tabs now live in the shared
+    // inspector alongside Result/Parameters/Protocol. They render
+    // placeholders until stream E/gateway wire richer data.
+    expect(tabs).toContain("Source");
+    expect(tabs).toContain("Process / Logs");
 
     click('[data-testid="inspection-tab-result-node-echo"]');
     click('[data-testid="maximize-result-node-echo"]');

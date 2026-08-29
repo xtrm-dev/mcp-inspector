@@ -4,10 +4,20 @@ import type { AgentRun } from "../api/types";
 import { TraceOverlayPanel } from "../components/TraceOverlayPanel";
 import { AgentRunTimeline } from "../components/AgentRunTimeline";
 import { AgentRunWaterfall } from "../components/AgentRunWaterfall";
+import { AgentRunGraph } from "../components/AgentRunGraph";
+import { AgentRunWorkspaceProjection } from "../components/AgentRunWorkspaceProjection";
 
-// UX-6 slice 2: adds Waterfall projection. Graph / Workspace projections
-// land in slice 3.
-type ProjectionId = "list" | "timeline" | "waterfall";
+// UX-6 slice 3: all five PRD projections wired — list, timeline,
+// waterfall, graph, workspace.
+type ProjectionId = "list" | "timeline" | "waterfall" | "graph" | "workspace";
+
+const PROJECTION_LABEL: Record<ProjectionId, string> = {
+  list: "List",
+  timeline: "Timeline",
+  waterfall: "Waterfall",
+  graph: "Graph",
+  workspace: "Workspace",
+};
 
 export function AgentRunsPage() {
   const [runs, setRuns] = useState<AgentRun[]>([]);
@@ -23,7 +33,7 @@ export function AgentRunsPage() {
       <div className="page-header">
         <h2>Agent runs</h2>
         <div className="projection-picker" role="tablist" aria-label="Agent runs projection">
-          {(["list", "timeline", "waterfall"] as const).map((p) => (
+          {(["list", "timeline", "waterfall", "graph", "workspace"] as const).map((p) => (
             <button
               key={p}
               type="button"
@@ -33,7 +43,7 @@ export function AgentRunsPage() {
               data-testid={`agent-runs-projection-${p}`}
               onClick={() => setProjection(p)}
             >
-              {p === "list" ? "List" : p === "timeline" ? "Timeline" : "Waterfall"}
+              {PROJECTION_LABEL[p]}
             </button>
           ))}
         </div>
@@ -60,6 +70,8 @@ export function AgentRunsPage() {
 
       {selectedId && projection === "timeline" && <AgentRunTimeline agentRunId={selectedId} />}
       {selectedId && projection === "waterfall" && <AgentRunWaterfall agentRunId={selectedId} />}
+      {selectedId && projection === "graph" && <AgentRunGraph agentRunId={selectedId} />}
+      {selectedId && projection === "workspace" && <AgentRunWorkspaceProjection agentRunId={selectedId} />}
       {selectedId && <TraceOverlayPanel agentRunId={selectedId} />}
     </div>
   );

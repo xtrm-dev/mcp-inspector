@@ -6,6 +6,7 @@ import type {
   ExecutionRecord,
   JsonValue,
   ServerSummary,
+  SourceHint,
   TraceLinkSummary,
   WorkspaceNodePresentation,
   WorkspaceNodeRow,
@@ -223,6 +224,11 @@ function InspectionTabs(props: NodeProjectionProps) {
     if (history.length) available.push({ id: "history", label: "History", content: <HistoryDetails executions={history} /> });
     if (server) available.push({ id: "transport", label: "Transport", content: <TransportDetails server={server} /> });
     if (detail) {
+      available.push({ id: "source", label: "Source", content: <SourceDetails detail={detail} /> });
+      available.push({ id: "logs", label: "Process / Logs", content: <LogsDetails detail={detail} /> });
+      available.push({ id: "request", label: "Request", content: <RequestDetails detail={detail} /> });
+    }
+    if (detail) {
       available.push({
         id: "handoff",
         label: "Agent Handoff",
@@ -310,6 +316,74 @@ function TraceDetails({ traces }: { traces: TraceLinkSummary[] }) {
     <ul className="trace-list">
       {traces.map(({ trace, correlationKind, confidence }) => (
         <li key={trace.id}><strong>{trace.traceId}</strong><span>{correlationKind} · {Math.round(confidence * 100)}%</span></li>
+      ))}
+    </ul>
+  );
+}
+
+function SourceDetails({ detail }: { detail: ExecutionDetail }) {
+  // Reads a `sourceHint` off ExecutionRecord.metadata when the gateway
+  // has attached one (packages/source-intelligence resolved the handler
+  // symbol for this capability). If not present, renders a placeholder
+  // so the tab still exists — Stream E owns wiring richer source data.
+  const meta = detail.execution.metadata as { sourceHint?: SourceHint | null } | null;
+  const hint = meta?.sourceHint ?? null;
+  if (!hint) {
+    return (
+      <p className="muted" data-testid="source-tab-placeholder">
+        No resolved handler symbol yet for this execution — unlocks once source-intelligence links a revision.
+      </p>
+    );
+  }
+  return (
+    <dl className="inspection-list" data-testid="source-tab-content">
+      <div><dt>File</dt><dd>{hint.filePath}</dd></div>
+      {hint.symbol && <div><dt>Symbol</dt><dd>{hint.symbol}</dd></div>}
+      {hint.lineStart !== null && (
+        <div><dt>Lines</dt><dd>{hint.lineStart}{hint.lineEnd !== null && hint.lineEnd !== hint.lineStart ? `–${hint.lineEnd}` : ""}</dd></div>
+      )}
+      <div><dt>Revision</dt><dd>{hint.revisionId}</dd></div>
+    </dl>
+  );
+}
+
+function LogsDetails({ detail }: { detail: ExecutionDetail }) {
+  // Process/notification evidence is the closest thing to correlated
+  // gateway logs the execution detail exposes today. Absent that,
+  // placeholder points at what unlocks richer log correlation.
+  const logRefs = detail.evidence.filter((e) => e.kind === "process" || e.kind === "notification");
+  if (logRefs.length === 0) {
+    return (
+      <p className="muted" data-testid="logs-tab-placeholder">
+        Gateway process logs correlated by executionId are not exposed on the execution detail yet.
+      </p>
+    );
+  }
+  return (
+    <ul className="trace-list" data-testid="logs-tab-content">
+      {logRefs.map((e) => (
+        <li key={e.id}><strong>{e.kind}</strong><span>{e.artifactRef}</span></li>
+      ))}
+    </ul>
+  );
+}
+
+function RequestDetails({ detail }: { detail: ExecutionDetail }) {
+  // Raw JSON-RPC request evidence — wired once Stream C guarantees a
+  // `raw_request` evidence artifact per execution. Meanwhile surfaces
+  // whichever raw_request / raw_response refs the execution carries.
+  const rawRefs = detail.evidence.filter((e) => e.kind === "raw_request" || e.kind === "raw_response");
+  if (rawRefs.length === 0) {
+    return (
+      <p className="muted" data-testid="request-tab-placeholder">
+        No raw request evidence for this execution — unlocks once the raw_request artifact is captured.
+      </p>
+    );
+  }
+  return (
+    <ul className="trace-list" data-testid="request-tab-content">
+      {rawRefs.map((e) => (
+        <li key={e.id}><strong>{e.kind}</strong><span>{e.artifactRef}</span></li>
       ))}
     </ul>
   );

@@ -1,13 +1,20 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   cancelExecutionApi,
   compareExecutionsApi,
   getExecution,
   listExecutions,
+  listServers,
   retryExecutionApi,
 } from "../api/client";
-import type { CompareResult, ExecutionDetail, ExecutionRecord, JsonValue } from "../api/types";
-import { RendererView } from "../renderer-view";
+import type {
+  CompareResult,
+  ExecutionDetail,
+  ExecutionRecord,
+  ServerSummary,
+  WorkspaceNodeRow,
+} from "../api/types";
+import { CapabilityInspector } from "../components/WorkspaceProjections";
 import { ComparisonView } from "../components/ComparisonView";
 
 export function ExecutionsPage() {
@@ -144,6 +151,7 @@ export function ExecutionsPage() {
 
 function ExecutionDetailView({ id, onChanged }: { id: string; onChanged: () => void }) {
   const [detail, setDetail] = useState<ExecutionDetail | null>(null);
+  const [servers, setServers] = useState<Map<string, ServerSummary>>(new Map());
   const [error, setError] = useState<string | null>(null);
 
   function refresh() {
@@ -153,7 +161,34 @@ function ExecutionDetailView({ id, onChanged }: { id: string; onChanged: () => v
   }
   useEffect(refresh, [id]);
 
-  const lastRound = detail?.rounds[detail.rounds.length - 1];
+  useEffect(() => {
+    listServers()
+      .then((r) => setServers(new Map(r.servers.map((s) => [s.id, s]))))
+      .catch(() => setServers(new Map()));
+  }, []);
+
+  const node = useMemo<WorkspaceNodeRow | null>(() => {
+    if (!detail) return null;
+    const exec = detail.execution;
+    return {
+      id: exec.id,
+      workspaceId: exec.workspaceId ?? "",
+      serverId: exec.serverId,
+      capabilityId: exec.capabilityId,
+      argumentsJson: null,
+      presentation: "expanded",
+      position: 0,
+      createdAt: exec.startedAt,
+      updatedAt: exec.endedAt ?? exec.startedAt,
+    };
+  }, [detail]);
+
+  const detailMap = useMemo(() => {
+    const m = new Map<string, ExecutionDetail>();
+    if (detail) m.set(detail.execution.id, detail);
+    return m;
+  }, [detail]);
+
   const canCancel = detail?.execution.status === "running" || detail?.execution.status === "task_working";
 
   return (
@@ -176,18 +211,27 @@ function ExecutionDetailView({ id, onChanged }: { id: string; onChanged: () => v
         </button>
       </div>
       {error && <p className="form-error">{error}</p>}
-      {detail && (
+      {detail && node && (
         <>
           <p className="muted">
             status: <span className={`status ${detail.execution.status}`}>{detail.execution.status}</span> · rounds:{" "}
             {detail.rounds.length} · evidence: {detail.evidence.length}
           </p>
-          {lastRound && (
-            <RendererView
-              value={lastRound.resultInlineJson ? (JSON.parse(lastRound.resultInlineJson) as JsonValue) : undefined}
-              resultArtifact={lastRound.resultArtifact}
+          <div data-testid="execution-inspector">
+            <CapabilityInspector
+              node={node}
+              servers={servers}
+              selectedNodeId={node.id}
+              selectedNodeIds={new Set()}
+              executionDetails={detailMap}
+              executionHistory={new Map()}
+              descriptions={new Map()}
+              runResult={null}
+              onSelectNode={() => {}}
+              onToggleSelected={() => {}}
+              onPresentationChange={() => {}}
             />
-          )}
+          </div>
         </>
       )}
     </div>

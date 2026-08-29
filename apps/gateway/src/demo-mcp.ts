@@ -169,6 +169,7 @@ function tryRouteTasksMethod(
 
   if (method === "tasks/cancel") {
     task.status = "cancelled";
+    task.lastUpdatedAt = nowIso();
     return respondJson(res, {
       jsonrpc: "2.0",
       id,
@@ -176,7 +177,25 @@ function tryRouteTasksMethod(
     });
   }
   if (method === "tasks/update") {
-    // The demo does not model mid-task input yet; acknowledge and echo.
+    // Tasks-extension update: the client provides inputResponses that
+    // unblock an interactive task waiting in `input_required`. Any other
+    // update is an acknowledged echo.
+    const inputResponses = isJsonObject(params.inputResponses)
+      ? (params.inputResponses as Record<string, unknown>)
+      : undefined;
+    if (
+      task.kind === "interactive" &&
+      task.status === "input_required" &&
+      inputResponses !== undefined
+    ) {
+      const responded = extractRespondedName(inputResponses);
+      if (responded && responded.length > 0) {
+        task.status = "working";
+        task.awaitingInput = false;
+        task.pollCount = 0;
+        task.lastUpdatedAt = nowIso();
+      }
+    }
     return respondJson(res, {
       jsonrpc: "2.0",
       id,
@@ -184,10 +203,16 @@ function tryRouteTasksMethod(
     });
   }
 
-  // tasks/get: advance the demo state machine (poll #2 → completed).
+  // tasks/get: advance the demo state machine.
+  //   long_running: working → (poll #2) completed(result=42)
+  //   interactive : working → (poll #1) input_required → [tasks/update inputResponses]
+  //                        → working → (poll #1 post-answer) completed(result=42)
   if (task.status === "working") {
     task.pollCount += 1;
-    if (task.pollCount >= 2) {
+    task.lastUpdatedAt = nowIso();
+    if (task.kind === "interactive" && task.awaitingInput) {
+      task.status = "input_required";
+    } else if (task.pollCount >= 2 || (task.kind === "interactive" && !task.awaitingInput)) {
       task.status = "completed";
       task.result = 42;
     }
@@ -195,8 +220,26 @@ function tryRouteTasksMethod(
   const resultEnv: Record<string, unknown> = {
     taskId,
     status: task.status,
-    pollIntervalMs: 250,
+    pollIntervalMs: TASK_POLL_INTERVAL_MS,
   };
+  if (task.status === "input_required") {
+    // Extension-shaped `inputRequests` payload. The map key ('name') matches
+    // what tasks/update expects back on inputResponses to unblock the task.
+    resultEnv["inputRequests"] = {
+      [INTERACTIVE_INPUT_KEY]: {
+        method: "elicitation/create",
+        params: {
+          message: "What is your name?",
+          requestedSchema: {
+            type: "object",
+            properties: { name: { type: "string" } },
+            required: ["name"],
+          },
+        },
+      },
+    };
+    resultEnv["requestState"] = `interactive_task:${taskId}`;
+  }
   if (task.status === "completed" && task.result !== undefined) {
     resultEnv["result"] = {
       content: [
@@ -209,6 +252,22 @@ function tryRouteTasksMethod(
     };
   }
   return respondJson(res, { jsonrpc: "2.0", id, result: resultEnv });
+}
+
+function isJsonObject(v: unknown): v is Record<string, unknown> {
+  return v !== null && typeof v === "object" && !Array.isArray(v);
+}
+
+// Accept either { name: "…" } or { name: { name: "…" } } (elicitation
+// nesting per the tasks-extension examples). Non-string values are ignored.
+function extractRespondedName(responses: Record<string, unknown>): string | undefined {
+  const slot = responses[INTERACTIVE_INPUT_KEY];
+  if (typeof slot === "string") return slot;
+  if (isJsonObject(slot)) {
+    const inner = (slot as Record<string, unknown>)[INTERACTIVE_INPUT_KEY];
+    if (typeof inner === "string") return inner;
+  }
+  return undefined;
 }
 
 function respondJson(res: ServerResponse, body: unknown): true {
@@ -225,22 +284,67 @@ function closeHttpServer(server: HttpServer): Promise<void> {
   return new Promise((resolve) => server.close(() => resolve()));
 }
 
-type DemoTaskStatus = "working" | "completed" | "cancelled";
+type DemoTaskStatus = "working" | "input_required" | "completed" | "cancelled";
+type DemoTaskKind = "long_running" | "interactive";
 interface DemoTask {
+  kind: DemoTaskKind;
   status: DemoTaskStatus;
   pollCount: number;
   result?: number;
+  createdAt: string;
+  lastUpdatedAt: string;
+  // Interactive-flow marker: cleared once the client answers the elicitation.
+  awaitingInput?: boolean;
 }
 const demoTasks = new Map<string, DemoTask>();
 
-function taskResult(taskId: string, status: DemoTaskStatus, result?: number) {
-  const structuredContent =
-    result === undefined ? { taskId, status } : { taskId, status, result };
+const TASK_POLL_INTERVAL_MS = 250;
+const INTERACTIVE_INPUT_KEY = "name";
+
+/**
+ * Build a `tools/call` result that carries BOTH:
+ *   - the legacy `structuredContent: { taskId, status }` shape (the
+ *     detectTaskShape classifier in routes.ts still recognizes this), and
+ *   - the standard Tasks-extension envelope under a top-level `task` field
+ *     (`CreateTaskResultSchema`; SDK's `$loose` root allows extra fields).
+ * The adapter's mapCallToolResult prefers `task.taskId`/`task.status` when
+ * present and stamps `evidence.resultType = "task"`.
+ */
+function taskCreateResult(taskId: string, task: DemoTask) {
+  const structuredContent = { taskId, status: task.status };
   return {
     content: [{ type: "text" as const, text: JSON.stringify(structuredContent) }],
     structuredContent,
+    task: {
+      taskId,
+      status: task.status,
+      ttl: null,
+      createdAt: task.createdAt,
+      lastUpdatedAt: task.lastUpdatedAt,
+      pollInterval: TASK_POLL_INTERVAL_MS,
+    },
   };
 }
+
+function nowIso(): string {
+  return new Date().toISOString();
+}
+
+function createDemoTask(kind: DemoTaskKind): { taskId: string; task: DemoTask } {
+  const taskId = randomUUID();
+  const t = nowIso();
+  const task: DemoTask = {
+    kind,
+    status: "working",
+    pollCount: 0,
+    createdAt: t,
+    lastUpdatedAt: t,
+    ...(kind === "interactive" ? { awaitingInput: true } : {}),
+  };
+  demoTasks.set(taskId, task);
+  return { taskId, task };
+}
+
 
 function buildDemoServer(): McpServer {
   const mcp = new McpServer(
@@ -308,36 +412,26 @@ function buildDemoServer(): McpServer {
     "long_running_task",
     {
       title: "Long Running Task",
-      description: "Starts a task; poll or cancel it by taskId on follow-up calls.",
-      inputSchema: z.object({ taskId: z.string().optional(), cancel: z.boolean().optional() }),
-      outputSchema: z.object({
-        taskId: z.string(),
-        status: z.enum(["working", "completed", "cancelled"]),
-        result: z.number().optional(),
-      }),
+      description:
+        "Starts a Tasks-extension task. Returns a task envelope; poll or cancel via tasks/get / tasks/cancel.",
+      inputSchema: z.object({}),
     },
-    ({ taskId, cancel }) => {
-      if (!taskId) {
-        const id = randomUUID();
-        demoTasks.set(id, { status: "working", pollCount: 0 });
-        return taskResult(id, "working");
-      }
-      const task = demoTasks.get(taskId);
-      if (!task) throw new Error(`long_running_task: unknown taskId '${taskId}'`);
-      if (cancel) {
-        task.status = "cancelled";
-        return taskResult(taskId, "cancelled");
-      }
-      if (task.status !== "working") {
-        return taskResult(taskId, task.status, task.result);
-      }
-      task.pollCount += 1;
-      if (task.pollCount >= 2) {
-        task.status = "completed";
-        task.result = 42;
-        return taskResult(taskId, "completed", 42);
-      }
-      return taskResult(taskId, "working");
+    () => {
+      const { taskId, task } = createDemoTask("long_running");
+      return taskCreateResult(taskId, task);
+    },
+  );
+  mcp.registerTool(
+    "interactive_task",
+    {
+      title: "Interactive Task",
+      description:
+        "Starts a Tasks-extension task that reaches input_required mid-flight. Answer via tasks/update inputResponses, then poll to completion.",
+      inputSchema: z.object({}),
+    },
+    () => {
+      const { taskId, task } = createDemoTask("interactive");
+      return taskCreateResult(taskId, task);
     },
   );
   mcp.registerResource(

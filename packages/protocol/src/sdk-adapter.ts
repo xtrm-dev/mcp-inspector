@@ -392,7 +392,12 @@ function mapTaskResult(
   const status = typeof r.status === "string" ? r.status : "unknown";
   const extensions: Record<string, JsonValue> = { taskMethod: method, status };
   if (typeof r.taskId === "string") extensions["taskId"] = r.taskId;
+  // The spec field is `pollInterval`; the extension seam long used
+  // `pollIntervalMs`. Accept either on the wire and surface it under the
+  // stable extension name callers already read.
+  const pollFromSpec = (r as { pollInterval?: unknown }).pollInterval;
   if (typeof r.pollIntervalMs === "number") extensions["pollIntervalMs"] = r.pollIntervalMs;
+  else if (typeof pollFromSpec === "number") extensions["pollIntervalMs"] = pollFromSpec;
   if (typeof r.ttlMs === "number") extensions["ttlMs"] = r.ttlMs;
   if (r.inputRequests !== undefined) extensions["inputRequests"] = r.inputRequests as JsonValue;
   if (r.requestState !== undefined) extensions["requestState"] = r.requestState as JsonValue;
@@ -415,12 +420,15 @@ function mapTaskResult(
   }
 
   // Non-completed statuses: shape the value so detectTaskShape can classify.
+  // A task-extension `input_required` status is NOT the MRTR resultType —
+  // the caller must send `tasks/update` with `inputResponses`, not
+  // `continueCall`. Stamp `resultType: "task"` unconditionally here and
+  // let routes.ts branch on `extensions.status`.
   const value: JsonValue = {
     taskId: typeof r.taskId === "string" ? r.taskId : "",
     status,
   };
-  const resultType: ProtocolEvidence["resultType"] =
-    status === "input_required" ? "input_required" : "task";
+  const resultType: ProtocolEvidence["resultType"] = "task";
   const evidence: ProtocolEvidence = { resultType };
   if (era) evidence.era = era;
   if (version) evidence.version = version;
@@ -438,18 +446,36 @@ function mapCallToolResult(
   const version = client.getNegotiatedProtocolVersion();
   const responseMeta = (result as { _meta?: unknown })._meta;
 
+  // R1.3: recognize the Tasks-extension `CreateTaskResult` envelope on a
+  // `tools/call` reply. Two shapes are accepted, in this order:
+  //   1. Wire `resultType: 'task'` (spec-strict; SDK #2598 currently
+  //      rejects this on decode, kept here for symmetry with a future SDK).
+  //   2. A top-level `task: { taskId, status, ttl, createdAt, lastUpdatedAt,
+  //      pollInterval? }` field carried on an ordinary `resultType: 'complete'`
+  //      result (SDK #2598-compatible; how demo-mcp actually emits it).
+  //   3. Legacy fallback: bare `{ taskId, status }` at the top level. Kept so
+  //      pre-R1.3 servers still classify as task-shaped downstream.
+  // Value is synthesized as `{ taskId, status }` so routes.ts's
+  // `detectTaskShape` continues to route the outcome as task_working.
   const rawResultType = (result as { resultType?: unknown }).resultType;
-  if (rawResultType === "task") {
-    const r = result as { taskId?: unknown; status?: unknown };
-    const extensions: Record<string, JsonValue> = {};
-    if (typeof r.taskId === "string") extensions["taskId"] = r.taskId;
-    if (typeof r.status === "string") extensions["status"] = r.status;
+  const rawTask = (result as { task?: unknown }).task;
+  const envelope: { taskId?: unknown; status?: unknown; pollInterval?: unknown } | null =
+    isJsonObject(rawTask)
+      ? (rawTask as { taskId?: unknown; status?: unknown; pollInterval?: unknown })
+      : rawResultType === "task"
+        ? (result as { taskId?: unknown; status?: unknown; pollInterval?: unknown })
+        : null;
+  if (envelope !== null) {
+    const taskId = typeof envelope.taskId === "string" ? envelope.taskId : "";
+    const status = typeof envelope.status === "string" ? envelope.status : "working";
+    const extensions: Record<string, JsonValue> = { taskId, status };
+    if (typeof envelope.pollInterval === "number") extensions["pollIntervalMs"] = envelope.pollInterval;
     const evidence: ProtocolEvidence = { resultType: "task" };
     if (era) evidence.era = era;
     if (version) evidence.version = version;
     if (isJsonObject(responseMeta)) evidence.responseMeta = responseMeta;
-    if (Object.keys(extensions).length > 0) evidence.extensions = extensions;
-    return { value: null, evidence };
+    evidence.extensions = extensions;
+    return { value: { taskId, status }, evidence };
   }
 
   if (isInputRequiredResult(result)) {

@@ -23,6 +23,15 @@ export interface WorkspaceLayoutState {
   projection: WorkspaceProjection;
   selectedNodeIds: string[];
   graph: GraphLayout;
+  detailPaneWidth?: number;
+}
+
+export const DETAIL_PANE_MIN_WIDTH = 320;
+export const DETAIL_PANE_DEFAULT_WIDTH = 390;
+export function clampDetailPaneWidth(value: number, viewportWidth?: number): number {
+  const vw = viewportWidth && viewportWidth > 0 ? viewportWidth : (typeof window !== "undefined" ? window.innerWidth : 1280);
+  const max = Math.max(DETAIL_PANE_MIN_WIDTH, Math.floor(vw * 0.6));
+  return Math.min(max, Math.max(DETAIL_PANE_MIN_WIDTH, Math.round(value)));
 }
 
 interface WorkspaceGraphProps {
@@ -255,7 +264,7 @@ export function readWorkspaceLayout(raw: string): WorkspaceLayoutState {
   const graph = objectValue(value.graph);
   const positions = objectValue(graph.positions);
   const viewport = objectValue(graph.viewport);
-  return {
+  const state: WorkspaceLayoutState = {
     raw: value,
     projection: value.projection === "graph" || value.projection === "list" ? value.projection : "grid",
     selectedNodeIds: Array.isArray(value.selectedNodeIds) ? value.selectedNodeIds.filter((id): id is string => typeof id === "string") : [],
@@ -272,6 +281,8 @@ export function readWorkspaceLayout(raw: string): WorkspaceLayoutState {
       groupBy: graph.groupBy === "none" ? "none" : "server",
     },
   };
+  if (finite(value.detailPaneWidth)) state.detailPaneWidth = clampDetailPaneWidth(value.detailPaneWidth);
+  return state;
 }
 
 export function serializeWorkspaceLayout(layout: WorkspaceLayoutState) {
@@ -280,6 +291,7 @@ export function serializeWorkspaceLayout(layout: WorkspaceLayoutState) {
     ...layout.raw,
     projection: layout.projection,
     selectedNodeIds: layout.selectedNodeIds,
+    detailPaneWidth: layout.detailPaneWidth,
     graph: { ...graph, ...layout.graph },
   });
 }

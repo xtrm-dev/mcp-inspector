@@ -9,5 +9,5 @@
     "@mcp-inspector-x/execution": "*",
     "@mcp-inspector-x/protocol": "*"
   },
-  "devDependencies": { "typescript": "^5.9.2" }
+  "devDependencies": { "typescript": "^7.0.2" }
 }
